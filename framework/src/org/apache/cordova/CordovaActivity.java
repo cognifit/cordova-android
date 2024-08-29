@@ -151,6 +151,10 @@ public class CordovaActivity extends AppCompatActivity {
 
     protected void init() {
         appView = makeWebView();
+        appView.getView().setLayerType(WebView.LAYER_TYPE_HARDWARE, null);
+        final WebView webView = (WebView) appView.getView();
+        webView.getSettings().setTextZoom(100);
+           
         createViews();
         if (!appView.isInitialized()) {
             appView.init(cordovaInterface, pluginEntries, preferences);
