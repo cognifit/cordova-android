@@ -39,6 +39,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.WebViewClient;
+import android.webkit.WebView;
 import android.widget.FrameLayout;
 
 import androidx.appcompat.app.AppCompatActivity;
