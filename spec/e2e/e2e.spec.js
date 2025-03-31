@@ -17,9 +17,9 @@
  under the License.
  */
 
-const os = require('os');
-const fs = require('fs-extra');
-const path = require('path');
+const os = require('node:os');
+const fs = require('node:fs');
+const path = require('node:path');
 const { EventEmitter } = require('events');
 const { ConfigParser, PluginInfoProvider } = require('cordova-common');
 const Api = require('../../lib/Api');
@@ -49,14 +49,15 @@ describe('E2E', function () {
         api = await makeProject(projectPath);
     });
     afterEach(() => {
-        fs.removeSync(tmpDir);
+        fs.rmSync(tmpDir, { recursive: true, force: true });
     });
 
     it('loads the API from a project directory', async () => {
         // Allow test project to find the `cordova-android` module
-        fs.ensureSymlinkSync(
-            path.join(__dirname, '../..'),
-            path.join(tmpDir, 'node_modules/cordova-android'),
+        fs.mkdirSync(path.join(tmpDir, 'node_modules'), { recursive: true });
+        fs.symlinkSync(
+            path.join(__dirname, '..', '..'),
+            path.join(tmpDir, 'node_modules', 'cordova-android'),
             'junction'
         );
 

@@ -19,8 +19,8 @@
 
 const rewire = require('rewire');
 const android_sdk = require('../../lib/android_sdk');
-const fs = require('fs-extra');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 const events = require('cordova-common').events;
 const which = require('which');
 

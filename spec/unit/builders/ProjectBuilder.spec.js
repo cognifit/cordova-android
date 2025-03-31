@@ -17,8 +17,8 @@
     under the License.
 */
 
-const fs = require('fs-extra');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 const rewire = require('rewire');
 const { isWindows } = require('../../../lib/utils');
 
@@ -134,14 +134,14 @@ describe('ProjectBuilder', () => {
             execaSpy.and.resolveTo();
         });
 
-        it('should run gradle wrapper 8.7', async () => {
-            await builder.installGradleWrapper('8.7');
-            expect(execaSpy).toHaveBeenCalledWith('gradle', ['-p', path.normalize('/root/tools'), 'wrapper', '--gradle-version', '8.7'], jasmine.any(Object));
+        it('should run gradle wrapper 8.13', async () => {
+            await builder.installGradleWrapper('8.13');
+            expect(execaSpy).toHaveBeenCalledWith('gradle', ['-p', path.normalize('/root/tools'), 'wrapper', '--gradle-version', '8.13'], jasmine.any(Object));
         });
 
         it('CORDOVA_ANDROID_GRADLE_DISTRIBUTION_URL should override gradle version', async () => {
             process.env.CORDOVA_ANDROID_GRADLE_DISTRIBUTION_URL = 'https://dist.local';
-            await builder.installGradleWrapper('8.7');
+            await builder.installGradleWrapper('8.13');
             delete process.env.CORDOVA_ANDROID_GRADLE_DISTRIBUTION_URL;
             expect(execaSpy).toHaveBeenCalledWith('gradle', ['-p', path.normalize('/root/tools'), 'wrapper', '--gradle-distribution-url', 'https://dist.local'], jasmine.any(Object));
         });
@@ -220,7 +220,7 @@ describe('ProjectBuilder', () => {
         beforeEach(() => {
             const marker = ProjectBuilder.__get__('MARKER');
             spyOn(fs, 'readFileSync').and.returnValue(`Some Header Here: ${marker}`);
-            spyOn(fs, 'removeSync');
+            spyOn(fs, 'rmSync');
             spyOn(builder, 'getArgs');
             execaSpy.and.returnValue(Promise.resolve());
         });
@@ -250,7 +250,7 @@ describe('ProjectBuilder', () => {
 
         it('should remove "out" folder', () => {
             return builder.clean({}).then(() => {
-                expect(fs.removeSync).toHaveBeenCalledWith(path.join(rootDir, 'out'));
+                expect(fs.rmSync).toHaveBeenCalledWith(path.join(rootDir, 'out'), { recursive: true, force: true });
             });
         });
 
@@ -261,8 +261,8 @@ describe('ProjectBuilder', () => {
             spyOn(fs, 'existsSync').and.returnValue(true);
 
             return builder.clean({}).then(() => {
-                expect(fs.removeSync).toHaveBeenCalledWith(debugSigningFile);
-                expect(fs.removeSync).toHaveBeenCalledWith(releaseSigningFile);
+                expect(fs.rmSync).toHaveBeenCalledWith(debugSigningFile);
+                expect(fs.rmSync).toHaveBeenCalledWith(releaseSigningFile);
             });
         });
 
@@ -273,8 +273,8 @@ describe('ProjectBuilder', () => {
             spyOn(fs, 'existsSync').and.returnValue(false);
 
             return builder.clean({}).then(() => {
-                expect(fs.removeSync).not.toHaveBeenCalledWith(debugSigningFile);
-                expect(fs.removeSync).not.toHaveBeenCalledWith(releaseSigningFile);
+                expect(fs.rmSync).not.toHaveBeenCalledWith(debugSigningFile);
+                expect(fs.rmSync).not.toHaveBeenCalledWith(releaseSigningFile);
             });
         });
     });
