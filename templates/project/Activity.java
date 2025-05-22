@@ -40,7 +40,6 @@ public class __ACTIVITY__ extends CordovaActivity
         // Set by <content src="index.html" /> in config.xml
         loadUrl(launchUrl);
     }
-}
 
     /** Proposed by ChatGPT to avoid some 'freezing' issues when the App resumes */
     @Override
@@ -54,3 +53,4 @@ public class __ACTIVITY__ extends CordovaActivity
             content.invalidate();
         }
     }
+}
