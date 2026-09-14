@@ -42,6 +42,9 @@ import android.view.WindowManager;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 
+import androidx.webkit.WebViewCompat;
+import androidx.webkit.WebViewFeature;
+
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
 import androidx.core.splashscreen.SplashScreen;
@@ -107,6 +110,13 @@ public class CordovaActivity extends AppCompatActivity {
 
     private boolean canEdgeToEdge = false;
     private boolean isFullScreen = false;
+    private FrameLayout cordovaRootLayout;
+    private IndependentWebViewHost independentWebViews;
+    /** Receives main WebView renderer loss after mandatory native cleanup starts. */
+    public interface MainWebViewTerminationListener {
+        void onTerminated(android.webkit.RenderProcessGoneDetail detail);
+    }
+    private MainWebViewTerminationListener mainWebViewTerminationListener;
 
     /**
      * Called when the activity is first created.
@@ -201,6 +211,7 @@ public class CordovaActivity extends AppCompatActivity {
 
         // Root FrameLayout
         FrameLayout rootLayout = new FrameLayout(this);
+        cordovaRootLayout = rootLayout;
         rootLayout.setLayoutParams(new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -258,6 +269,78 @@ public class CordovaActivity extends AppCompatActivity {
         setContentView(rootLayout);
         rootLayout.post(() -> ViewCompat.requestApplyInsets(rootLayout));
         webView.requestFocusFromTouch();
+    }
+
+    /**
+     * Register complete Cordova applications before the first load. The active
+     * one remains the only Cordova/plugin environment.
+     */
+    public void registerWebApps(java.util.Map<String, IndependentWebViewHost.WebApp> apps, String defaultId) {
+        getIndependentWebViews().registerWebApps(apps, defaultId);
+    }
+    public boolean switchToWebApp(String id, boolean remember, JSONObject handoffContext) {
+        return getIndependentWebViews().switchToWebApp(id, remember, handoffContext);
+    }
+    public void confirmWebAppReady() { getIndependentWebViews().confirmWebAppReady(); }
+    public void clearRememberedWebApp() { getIndependentWebViews().clearRememberedWebApp(); }
+    public String getActiveWebAppId() { return getIndependentWebViews().getActiveWebAppId(); }
+    public JSONObject getWebAppContext() { return getIndependentWebViews().getWebAppContext(); }
+    public void setWebAppSelectionKey(String key) { getIndependentWebViews().setSelectionKey(key); }
+    public boolean createGameWebView(String root, String entryPage) { return getIndependentWebViews().createGame(root, entryPage); }
+    public void showGameWebView(String loadingHtml) { getIndependentWebViews().showGame(loadingHtml); }
+    public void hideGameWebView() { getIndependentWebViews().hideGame(); }
+    public void destroyGameWebView() { getIndependentWebViews().destroyGame(); }
+    public void showLoadingScreen(String html) { getIndependentWebViews().showLoading(html); }
+    public void hideLoadingScreen() { getIndependentWebViews().hideLoading(); }
+    public void postMessageToGame(JSONObject message) { getIndependentWebViews().postMessageToGame(message); }
+    public void setIndependentWebViewEventListener(IndependentWebViewHost.EventListener listener) { getIndependentWebViews().setEventListener(listener); }
+    public void setMainWebViewTerminationListener(MainWebViewTerminationListener listener) { mainWebViewTerminationListener = listener; }
+
+    private IndependentWebViewHost getIndependentWebViews() {
+        if (cordovaRootLayout == null) throw new IllegalStateException("Call init() before using independent web views");
+        if (independentWebViews == null) independentWebViews = new IndependentWebViewHost(this, cordovaRootLayout);
+        return independentWebViews;
+    }
+
+    /** Replaces the main Cordova instance; used by registered app switching. */
+    void replaceMainWebView(String url, String documentStartScript) {
+        if (appView != null) {
+            if (appView instanceof CordovaWebViewImpl) ((CordovaWebViewImpl) appView).setPluginResultInterceptor(null);
+            cordovaRootLayout.removeView(appView.getView());
+            appView.handleDestroy();
+        }
+        appView = makeWebView();
+        if (!appView.isInitialized()) appView.init(cordovaInterface, pluginEntries, preferences);
+        cordovaInterface.onCordovaInit(appView.getPluginManager());
+        android.view.View replacement = appView.getView();
+        replacement.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        cordovaRootLayout.addView(replacement, 0);
+        if (appView.getView() instanceof android.webkit.WebView && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
+            try { WebViewCompat.addDocumentStartJavaScript((android.webkit.WebView) appView.getView(), documentStartScript, java.util.Collections.singleton("*")); } catch (RuntimeException e) { LOG.w(TAG, "Document-start handoff injection unavailable", e); }
+        }
+        installGameResultInterceptor();
+        loadUrl(url);
+    }
+
+    void installGameResultInterceptor() {
+        if (appView instanceof CordovaWebViewImpl && independentWebViews != null) {
+            final IndependentWebViewHost host = independentWebViews;
+            ((CordovaWebViewImpl) appView).setPluginResultInterceptor(new CordovaWebViewImpl.PluginResultInterceptor() {
+                @Override public boolean onPluginResult(PluginResult result, String callbackId) { return host.onPluginResult(result, callbackId); }
+            });
+        }
+    }
+
+    /** Called by the system engine after a main renderer exits. Do not reload here. */
+    public void onMainWebViewRendererGone(android.webkit.RenderProcessGoneDetail detail) {
+        CordovaWebView dead = appView;
+        appView = null;
+        if (dead != null) {
+            if (dead instanceof CordovaWebViewImpl) ((CordovaWebViewImpl) dead).setPluginResultInterceptor(null);
+            if (cordovaRootLayout != null) cordovaRootLayout.removeView(dead.getView());
+            dead.handleDestroy();
+        }
+        if (mainWebViewTerminationListener != null) mainWebViewTerminationListener.onTerminated(detail);
     }
 
     /**

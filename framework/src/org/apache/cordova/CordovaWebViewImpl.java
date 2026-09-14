@@ -64,6 +64,15 @@ public class CordovaWebViewImpl implements CordovaWebView {
     private NativeToJsMessageQueue nativeToJsMessageQueue;
     private EngineClient engineClient = new EngineClient();
     private boolean hasPausedEver;
+    /**
+     * Optional native result sink.  It is deliberately below PluginManager so a
+     * host can route a command to something other than the Cordova page without
+     * creating another PluginManager.
+     */
+    public interface PluginResultInterceptor {
+        boolean onPluginResult(PluginResult result, String callbackId);
+    }
+    private PluginResultInterceptor pluginResultInterceptor;
 
     // The URL passed to loadUrl(), not necessarily the URL of the current page.
     String loadedUrl;
@@ -358,7 +367,15 @@ public class CordovaWebViewImpl implements CordovaWebView {
 
     @Override
     public void sendPluginResult(PluginResult cr, String callbackId) {
+        if (pluginResultInterceptor != null && pluginResultInterceptor.onPluginResult(cr, callbackId)) {
+            return;
+        }
         nativeToJsMessageQueue.addPluginResult(cr, callbackId);
+    }
+
+    /** Set a native-only result sink; pass {@code null} to remove it. */
+    public void setPluginResultInterceptor(PluginResultInterceptor interceptor) {
+        pluginResultInterceptor = interceptor;
     }
 
     @Override

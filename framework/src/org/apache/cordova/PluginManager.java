@@ -71,6 +71,16 @@ public class PluginManager {
         return entryMap.values();
     }
 
+    /**
+     * Snapshot of instantiated plugins keyed by their callable service names.
+     * A null value denotes a registered but not-yet-instantiated plugin.
+     */
+    public Map<String, CordovaPlugin> getPluginMap() {
+        synchronized (pluginMap) {
+            return new LinkedHashMap<String, CordovaPlugin>(pluginMap);
+        }
+    }
+
     public void setPluginEntries(Collection<PluginEntry> pluginEntries) {
         if (isInitialized) {
             this.onPause(false);

@@ -44,6 +44,7 @@ import org.apache.cordova.CordovaPluginPathHandler;
 import org.apache.cordova.CordovaResourceApi;
 import org.apache.cordova.LOG;
 import org.apache.cordova.PluginManager;
+import org.apache.cordova.CordovaActivity;
 
 import java.io.FileNotFoundException;
 import java.io.IOException;
@@ -442,10 +443,11 @@ public class SystemWebViewClient extends WebViewClient {
     public boolean onRenderProcessGone(final WebView view, RenderProcessGoneDetail detail) {
         // Check if there is some plugin which can handle this event
         PluginManager pluginManager = this.parentEngine.pluginManager;
-        if (pluginManager != null && pluginManager.onRenderProcessGone(view, detail)) {
+        if (pluginManager != null) pluginManager.onRenderProcessGone(view, detail);
+        if (parentEngine.cordova != null && parentEngine.cordova.getActivity() instanceof CordovaActivity) {
+            ((CordovaActivity) parentEngine.cordova.getActivity()).onMainWebViewRendererGone(detail);
             return true;
         }
-
         return super.onRenderProcessGone(view, detail);
     }
 }
