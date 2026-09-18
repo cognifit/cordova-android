@@ -20,6 +20,7 @@
 package __ID__;
 
 import android.os.Bundle;
+import android.view.View;
 
 import org.apache.cordova.*;
 
@@ -38,5 +39,18 @@ public class __ACTIVITY__ extends CordovaActivity
 
         // Set by <content src="index.html" /> in config.xml
         loadUrl(launchUrl);
+    }
+
+    /** Proposed by ChatGPT to avoid some 'freezing' issues when the App resumes */
+    @Override
+    protected void onResume() {
+        super.onResume();
+
+        // Force redraw / layout refresh
+        final View content = findViewById(android.R.id.content);
+        if (content != null) {
+            content.requestLayout();
+            content.invalidate();
+        }
     }
 }

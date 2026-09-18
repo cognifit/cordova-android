@@ -40,6 +40,7 @@ import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 import android.webkit.WebViewClient;
+import android.webkit.WebView;
 import android.widget.FrameLayout;
 
 import androidx.webkit.WebViewCompat;
@@ -175,6 +176,10 @@ public class CordovaActivity extends AppCompatActivity {
 
     protected void init() {
         appView = makeWebView();
+        appView.getView().setLayerType(WebView.LAYER_TYPE_HARDWARE, null);
+        final WebView webView = (WebView) appView.getView();
+        webView.getSettings().setTextZoom(100);
+           
         createViews();
         if (!appView.isInitialized()) {
             appView.init(cordovaInterface, pluginEntries, preferences);
@@ -286,10 +291,13 @@ public class CordovaActivity extends AppCompatActivity {
     public String getActiveWebAppId() { return getIndependentWebViews().getActiveWebAppId(); }
     public JSONObject getWebAppContext() { return getIndependentWebViews().getWebAppContext(); }
     public void setWebAppSelectionKey(String key) { getIndependentWebViews().setSelectionKey(key); }
-    public boolean createGameWebView(String root, String entryPage) { return getIndependentWebViews().createGame(root, entryPage); }
-    public void showGameWebView(String loadingHtml) { getIndependentWebViews().showGame(loadingHtml); }
-    public void hideGameWebView() { getIndependentWebViews().hideGame(); }
-    public void destroyGameWebView() { getIndependentWebViews().destroyGame(); }
+    /** iOS-compatible clone API. */
+    public boolean createWebViewClone(String root, String entryPage) { return getIndependentWebViews().createGame(root, entryPage); }
+    public void showWebViewClone() { getIndependentWebViews().showGame(null); }
+    public void showWebViewClone(String loadingHtml) { getIndependentWebViews().showGame(loadingHtml); }
+    public void showWebViewCloneWithLoadingScreenHTML(String loadingHtml) { getIndependentWebViews().showGame(loadingHtml); }
+    public void hideWebViewClone() { getIndependentWebViews().hideGame(); }
+    public void dismissWebViewClone() { getIndependentWebViews().destroyGame(); }
     public void showLoadingScreen(String html) { getIndependentWebViews().showLoading(html); }
     public void hideLoadingScreen() { getIndependentWebViews().hideLoading(); }
     public void postMessageToGame(JSONObject message) { getIndependentWebViews().postMessageToGame(message); }

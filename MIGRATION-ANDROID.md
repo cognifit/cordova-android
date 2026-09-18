@@ -44,9 +44,9 @@ failure preserves the old saved choice. `remember=false` is session-only.
 ## Games and host bridge
 
 ```java
-createGameWebView(getFilesDir() + "/game", "index.html?level=1");
-showGameWebView("<main>Loading game…</main>");
-// hideGameWebView() retains a ready game; destroyGameWebView() releases it.
+createWebViewClone(getFilesDir() + "/game", "index.html?level=1");
+showWebViewCloneWithLoadingScreenHTML("<main>Loading game…</main>");
+// hideWebViewClone() retains a ready game; dismissWebViewClone() releases it.
 postMessageToGame(new JSONObject().put("type", "pause"));
 ```
 
