@@ -1,0 +1,72 @@
+<!doctype html><html><meta charset="utf-8"><title>RUNNING secondary concurrency</title><body>
+<h1>Secondary concurrency stress</h1><pre id="results">Starting…</pre><script src="cordova.js"></script><script>
+document.addEventListener('deviceready', async () => {
+  const mode = new URLSearchParams(location.search).get('mode') || 'shared';
+  const lines = [], errors = [], api = cordova.secondaryWebView;
+  const log = text => { lines.push(text); document.getElementById('results').textContent = lines.join('\n'); };
+  let running = true, sessionActive = false, phaseDone = null, launched = 0, cancelled = 0, navigations = 0, syncChecks = 0, largeMessages = 0, invalidChecks = 0;
+  const off = api.onEvent(event => {
+    if (event.type !== 'message' || !event.detail) return;
+    const {name, payload} = event.detail;
+    if (name === 'stressAwaitingStart') { api.post('startStress', {}).catch(error => errors.push('start failed: ' + error)); return; }
+    if (name === 'stressLargeMessage') { if (payload && payload.data && payload.data.length === 600000) largeMessages++; else errors.push('large message truncated'); }
+    if (name === 'stressInvalidTypes') { invalidChecks++; if (!payload || !payload.completed) errors.push('invalid types were not handled'); }
+    if (name === 'stressNavigating') { navigations++; log('navigating phase ' + payload.phase); }
+    if (name === 'stressLaunched') { launched += payload.count; cancelled += payload.cancelled; log('launched phase ' + payload.phase + ': ' + payload.count); }
+    if (name === 'stressSyncStatuses') {
+      syncChecks++;
+      payload.checks.forEach(item => { if (item.status !== item.expected) errors.push('sync XHR ' + item.name + ': ' + item.status + ' expected ' + item.expected); });
+    }
+    if (name === 'stressPhaseComplete' && phaseDone) { phaseDone(); phaseDone = null; }
+  });
+  function probe(label, call) {
+    let pending = false, pendingSince = 0, reported = false, last = performance.now();
+    const timer = setInterval(() => {
+      if (!running) return;
+      const now = performance.now();
+      if (now - last > 1000) errors.push(label + ' timer stall ' + Math.round(now - last) + 'ms');
+      last = now;
+      if (pending) {
+        if (!reported && now - pendingSince > 1000) { errors.push(label + ' main-thread stall ' + Math.round(now - pendingSince) + 'ms'); reported = true; }
+        return;
+      }
+      pending = true; reported = false; const started = pendingSince = performance.now();
+      call().catch(error => { errors.push(label + ' probe error ' + error); }).finally(() => {
+        const elapsed = performance.now() - started;
+        if (!reported && elapsed > 1000) errors.push(label + ' main-thread stall ' + Math.round(elapsed) + 'ms');
+        pending = false;
+      });
+    }, 100);
+    return () => clearInterval(timer);
+  }
+  const stopHost = probe('host', () => new Promise((resolve, reject) => cordova.exec(resolve, reject, 'SecondaryWebView', 'pingMainThread', [])));
+  const stopSecondary = probe(mode === 'isolated' ? 'secondary' : 'shared', () => sessionActive ? api.getMetrics() : Promise.resolve());
+  try {
+    for (let cycle = 0; cycle < 3; cycle++) {
+      let resolvePhase; const done = new Promise(resolve => { resolvePhase = resolve; });
+      const launchedBefore = launched;
+      phaseDone = resolvePhase;
+      await api.create({url: 'file:///android_asset/www/secondary-concurrency-content.html',
+        processIsolation: mode, unsafeAllowIsolatedBelowApi33: mode === 'isolated',
+        zOrder: 'below', frame: {x: 0, y: innerHeight / 2, width: innerWidth, height: innerHeight / 2},
+        telemetry: {assetErrors: true}});
+      sessionActive = true;
+      if (cycle < 2) await Promise.race([done, new Promise((_, reject) => setTimeout(() => reject('phase timeout'), 15000))]);
+      else { // Wait for the third cycle's burst, then destroy while it is in flight.
+        const deadline = performance.now() + 10000;
+        while (launched === launchedBefore && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+        if (launched === launchedBefore) errors.push('third-cycle requests did not launch');
+      }
+      sessionActive = false;
+      await api.destroy();
+      log('destroyed cycle ' + cycle);
+    }
+    await new Promise(resolve => setTimeout(resolve, 1100)); // let the final probe deadline expire
+    if (launched < 5 * 240 || cancelled < 20 || navigations < 2 || syncChecks < 5 || largeMessages < 2 || invalidChecks < 2) errors.push('incomplete stress: launched=' + launched + ', cancelled=' + cancelled + ', navigations=' + navigations + ', syncChecks=' + syncChecks + ', largeMessages=' + largeMessages + ', invalidChecks=' + invalidChecks);
+  } catch (error) { errors.push('run failed: ' + JSON.stringify(error)); }
+  running = false; stopHost(); stopSecondary(); off();
+  document.title = (errors.length ? 'FAIL' : 'PASS') + ' secondary concurrency ' + mode;
+  errors.forEach(error => log('FAIL ' + error));
+  if (!errors.length) log('PASS 200+ requests per phase, sync statuses, cancellation, navigation, destroy, repeated cycles');
+}, {once: true});
+</script></body></html>

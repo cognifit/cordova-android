@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Secondary asset failure host test</title></head>
+<body>
+<h1>Secondary asset failure host test</h1>
+<pre id="results">Waiting for deviceready…</pre>
+<script src="cordova.js"></script>
+<script>
+document.addEventListener('deviceready', async function () {
+    const results = document.getElementById('results');
+    const lines = [];
+    const failures = [];
+    let loadFailed = false;
+    let finished = false;
+    function write(line) { lines.push(line); results.textContent = lines.join('\n'); }
+    const off = cordova.secondaryWebView.onEvent(function (event) {
+        if (event.type === 'assetError') {
+            failures.push(event.detail);
+            write('assetError ' + JSON.stringify(event.detail));
+        }
+        if (event.type === 'loadFailed') { loadFailed = true; write('FAIL unexpected loadFailed: ' + event.detail); }
+        if (event.type === 'message' && event.detail.name === 'assetHttpTest') {
+            event.detail.payload.lines.forEach(write);
+            finished = true;
+            setTimeout(function () {
+                for (const expected of [{status: 404, path: 'missing-secondary-asset.txt', rootIndex: 0},
+                    {status: 403, path: 'denied-secondary-asset.txt', rootIndex: 999}]) {
+                    const ok = failures.some(e => e.sessionId === event.sessionId &&
+                        e.status === expected.status && e.path === expected.path &&
+                        e.rootIndex === expected.rootIndex && typeof e.reason === 'string');
+                    write((ok ? 'PASS' : 'FAIL') + ' assetError ' + expected.status + ' event');
+                }
+                write((!loadFailed ? 'PASS' : 'FAIL') + ' no loadFailed for subresources');
+                off();
+            }, 500);
+        }
+    });
+    try {
+        const isolated = new URLSearchParams(location.search).get('mode') === 'isolated';
+        await cordova.secondaryWebView.create({
+            processIsolation: isolated ? 'isolated' : 'shared',
+            unsafeAllowIsolatedBelowApi33: isolated,
+            url: 'file:///android_asset/www/secondary-http-status.html',
+            zOrder: isolated ? 'below' : 'above',
+            frame: {x: 0, y: innerHeight / 2, width: innerWidth, height: innerHeight / 2},
+            telemetry: {assetErrors: true}
+        });
+        write('Secondary created; response tests appear in the lower half.');
+        setTimeout(function () { if (!finished) write('FAIL secondary test did not finish'); }, 10000);
+    } catch (error) { write('FAIL create: ' + JSON.stringify(error)); off(); }
+}, {once: true});
+</script>
+</body>
+</html>

@@ -47,6 +47,10 @@ apply plugin: 'com.android.library'
 android {
     namespace = 'org.apache.cordova'
 
+    buildFeatures {
+        aidl = true
+    }
+
     compileSdkVersion cordovaConfig.COMPILE_SDK_VERSION
     buildToolsVersion cordovaConfig.BUILD_TOOLS_VERSION
 

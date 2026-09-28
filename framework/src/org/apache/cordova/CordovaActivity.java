@@ -43,8 +43,6 @@ import android.webkit.WebViewClient;
 import android.webkit.WebView;
 import android.widget.FrameLayout;
 
-import androidx.webkit.WebViewCompat;
-import androidx.webkit.WebViewFeature;
 
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.graphics.Insets;
@@ -112,7 +110,19 @@ public class CordovaActivity extends AppCompatActivity {
     private boolean canEdgeToEdge = false;
     private boolean isFullScreen = false;
     private FrameLayout cordovaRootLayout;
-    private IndependentWebViewHost independentWebViews;
+    private SecondaryWebViewManager secondaryWebViewManager;
+    private SecondaryWebViewIsolatedController isolatedSecondaryWebView;
+
+    public SecondaryWebViewManager secondaryWebViews() {
+        if (cordovaRootLayout == null) throw new IllegalStateException("Call init() before using the secondary web view");
+        if (secondaryWebViewManager == null) secondaryWebViewManager = new SecondaryWebViewManager(this, cordovaRootLayout);
+        return secondaryWebViewManager;
+    }
+    public SecondaryWebViewIsolatedController isolatedSecondaryWebViews() {
+        if (cordovaRootLayout == null) throw new IllegalStateException("Call init() before using the secondary web view");
+        if (isolatedSecondaryWebView == null) isolatedSecondaryWebView = new SecondaryWebViewIsolatedController(this, cordovaRootLayout);
+        return isolatedSecondaryWebView;
+    }
     /** Receives main WebView renderer loss after mandatory native cleanup starts. */
     public interface MainWebViewTerminationListener {
         void onTerminated(android.webkit.RenderProcessGoneDetail detail);
@@ -206,6 +216,11 @@ public class CordovaActivity extends AppCompatActivity {
         preferences.setPreferencesBundle(getIntent().getExtras());
         launchUrl = parser.getLaunchUrl();
         pluginEntries = parser.getPluginEntries();
+        boolean hasSecondaryWebView = false;
+        for (PluginEntry entry : pluginEntries) {
+            if ("SecondaryWebView".equals(entry.service)) { hasSecondaryWebView = true; break; }
+        }
+        if (!hasSecondaryWebView) pluginEntries.add(new PluginEntry("SecondaryWebView", SecondaryWebViewPlugin.class.getName(), false));
         Config.parser = parser;
     }
 
@@ -276,75 +291,15 @@ public class CordovaActivity extends AppCompatActivity {
         webView.requestFocusFromTouch();
     }
 
-    /**
-     * Register complete Cordova applications before the first load. The active
-     * one remains the only Cordova/plugin environment.
-     */
-    public void registerWebApps(java.util.Map<String, IndependentWebViewHost.WebApp> apps, String defaultId) {
-        getIndependentWebViews().registerWebApps(apps, defaultId);
-    }
-    public boolean switchToWebApp(String id, boolean remember, JSONObject handoffContext) {
-        return getIndependentWebViews().switchToWebApp(id, remember, handoffContext);
-    }
-    public void confirmWebAppReady() { getIndependentWebViews().confirmWebAppReady(); }
-    public void clearRememberedWebApp() { getIndependentWebViews().clearRememberedWebApp(); }
-    public String getActiveWebAppId() { return getIndependentWebViews().getActiveWebAppId(); }
-    public JSONObject getWebAppContext() { return getIndependentWebViews().getWebAppContext(); }
-    public void setWebAppSelectionKey(String key) { getIndependentWebViews().setSelectionKey(key); }
-    /** iOS-compatible clone API. */
-    public boolean createWebViewClone(String root, String entryPage) { return getIndependentWebViews().createGame(root, entryPage); }
-    public void showWebViewClone() { getIndependentWebViews().showGame(null); }
-    public void showWebViewClone(String loadingHtml) { getIndependentWebViews().showGame(loadingHtml); }
-    public void showWebViewCloneWithLoadingScreenHTML(String loadingHtml) { getIndependentWebViews().showGame(loadingHtml); }
-    public void hideWebViewClone() { getIndependentWebViews().hideGame(); }
-    public void dismissWebViewClone() { getIndependentWebViews().destroyGame(); }
-    public void showLoadingScreen(String html) { getIndependentWebViews().showLoading(html); }
-    public void hideLoadingScreen() { getIndependentWebViews().hideLoading(); }
-    public void postMessageToGame(JSONObject message) { getIndependentWebViews().postMessageToGame(message); }
-    public void setIndependentWebViewEventListener(IndependentWebViewHost.EventListener listener) { getIndependentWebViews().setEventListener(listener); }
     public void setMainWebViewTerminationListener(MainWebViewTerminationListener listener) { mainWebViewTerminationListener = listener; }
-
-    private IndependentWebViewHost getIndependentWebViews() {
-        if (cordovaRootLayout == null) throw new IllegalStateException("Call init() before using independent web views");
-        if (independentWebViews == null) independentWebViews = new IndependentWebViewHost(this, cordovaRootLayout);
-        return independentWebViews;
-    }
-
-    /** Replaces the main Cordova instance; used by registered app switching. */
-    void replaceMainWebView(String url, String documentStartScript) {
-        if (appView != null) {
-            if (appView instanceof CordovaWebViewImpl) ((CordovaWebViewImpl) appView).setPluginResultInterceptor(null);
-            cordovaRootLayout.removeView(appView.getView());
-            appView.handleDestroy();
-        }
-        appView = makeWebView();
-        if (!appView.isInitialized()) appView.init(cordovaInterface, pluginEntries, preferences);
-        cordovaInterface.onCordovaInit(appView.getPluginManager());
-        android.view.View replacement = appView.getView();
-        replacement.setLayoutParams(new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        cordovaRootLayout.addView(replacement, 0);
-        if (appView.getView() instanceof android.webkit.WebView && WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
-            try { WebViewCompat.addDocumentStartJavaScript((android.webkit.WebView) appView.getView(), documentStartScript, java.util.Collections.singleton("*")); } catch (RuntimeException e) { LOG.w(TAG, "Document-start handoff injection unavailable", e); }
-        }
-        installGameResultInterceptor();
-        loadUrl(url);
-    }
-
-    void installGameResultInterceptor() {
-        if (appView instanceof CordovaWebViewImpl && independentWebViews != null) {
-            final IndependentWebViewHost host = independentWebViews;
-            ((CordovaWebViewImpl) appView).setPluginResultInterceptor(new CordovaWebViewImpl.PluginResultInterceptor() {
-                @Override public boolean onPluginResult(PluginResult result, String callbackId) { return host.onPluginResult(result, callbackId); }
-            });
-        }
-    }
 
     /** Called by the system engine after a main renderer exits. Do not reload here. */
     public void onMainWebViewRendererGone(android.webkit.RenderProcessGoneDetail detail) {
+        if (secondaryWebViewManager != null) secondaryWebViewManager.onMainRendererGone();
+        if (isolatedSecondaryWebView != null) isolatedSecondaryWebView.destroy();
         CordovaWebView dead = appView;
         appView = null;
         if (dead != null) {
-            if (dead instanceof CordovaWebViewImpl) ((CordovaWebViewImpl) dead).setPluginResultInterceptor(null);
             if (cordovaRootLayout != null) cordovaRootLayout.removeView(dead.getView());
             dead.handleDestroy();
         }
@@ -395,6 +350,8 @@ public class CordovaActivity extends AppCompatActivity {
     protected void onPause() {
         super.onPause();
         LOG.d(TAG, "Paused the activity.");
+        if (secondaryWebViewManager != null) secondaryWebViewManager.onPause();
+        if (isolatedSecondaryWebView != null) isolatedSecondaryWebView.onPause();
 
         if (this.appView != null) {
             // CB-9382 If there is an activity that started for result and main activity is waiting for callback
@@ -422,6 +379,8 @@ public class CordovaActivity extends AppCompatActivity {
     protected void onResume() {
         super.onResume();
         LOG.d(TAG, "Resumed the activity.");
+        if (secondaryWebViewManager != null) secondaryWebViewManager.onResume();
+        if (isolatedSecondaryWebView != null) isolatedSecondaryWebView.onResume();
 
         if (this.appView == null) {
             return;
@@ -463,12 +422,22 @@ public class CordovaActivity extends AppCompatActivity {
         this.appView.handleStart();
     }
 
+    /** Forward memory pressure to the secondary web view. */
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (secondaryWebViewManager != null) secondaryWebViewManager.onTrimMemory(level);
+        if (isolatedSecondaryWebView != null) isolatedSecondaryWebView.onTrimMemory(level);
+    }
+
     /**
      * The final call you receive before your activity is destroyed.
      */
     @Override
     public void onDestroy() {
         LOG.d(TAG, "CordovaActivity.onDestroy()");
+        if (secondaryWebViewManager != null) secondaryWebViewManager.destroy();
+        if (isolatedSecondaryWebView != null) isolatedSecondaryWebView.destroy();
         super.onDestroy();
 
         if (this.appView != null) {

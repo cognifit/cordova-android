@@ -1,0 +1,70 @@
+<!doctype html><html><meta charset="utf-8"><title>Secondary concurrency content</title><body><script>
+(async function () {
+  const phase = Number(new URLSearchParams(location.search).get('phase') || 1);
+  await new Promise((resolve, reject) => {
+    const deadline = performance.now() + 5000;
+    const check = () => window.secondaryWebView ? resolve() :
+      performance.now() > deadline ? reject(new Error('secondary bridge unavailable')) : setTimeout(check, 10);
+    check();
+  });
+  await new Promise(resolve => {
+    const off = window.secondaryWebView.on('startStress', () => { clearInterval(timer); off(); resolve(); });
+    const announce = () => window.secondaryWebView.post('stressAwaitingStart', {phase});
+    const timer = setInterval(announce, 100);
+    announce();
+  });
+  const report = (name, payload) => window.secondaryWebView.post(name, payload);
+  const base = 'secondary-stress-pixel.svg';
+  const cases = [
+    ['ok', base, 200],
+    ['missing', 'secondary-stress-missing.txt', 404],
+    ['denied', location.origin + '/r/999/secondary-stress-denied.txt', 403]
+  ];
+  const checks = [];
+  for (const [name, url, expected] of cases) {
+    try {
+      const request = new XMLHttpRequest();
+      request.open('GET', url, false); request.send();
+      checks.push({name, status: request.status, expected});
+    } catch (error) { checks.push({name, status: 0, expected, error: String(error)}); }
+  }
+  report('stressSyncStatuses', {phase, checks});
+  // Exercise a large event pipe while the host's main-thread watchdog polls getMetrics.
+  report('stressLargeMessage', {phase, length: 600000, data: 'x'.repeat(600000)});
+  let invalidCompleted = false;
+  try {
+    // A bad page envelope must be rejected without bringing down either process.
+    const invalid = {sessionId: 'invalid', v: [], id: 'invalid', kind: 'evt', name: 'invalid', payload: null};
+    if (window._secondaryNative) window._secondaryNative.post(JSON.stringify(invalid));
+    await window.secondaryWebView.subscribe('invalid-types', {rateHz: null});
+  } catch (_) { invalidCompleted = true; }
+  report('stressInvalidTypes', {phase, completed: invalidCompleted});
+  const jobs = [];
+  let seed = 0x5f3759df ^ phase;
+  const random = () => { seed = (Math.imul(seed, 1664525) + 1013904223) | 0; return (seed >>> 0) / 4294967296; };
+  let cancelled = 0;
+  for (let i = 0; i < 240; i++) {
+    const url = base + '?phase=' + phase + '&request=' + i;
+    if (i % 3 === 0) {
+      const image = new Image(); document.body.appendChild(image); image.src = url;
+      if (random() < 0.25) { cancelled++; setTimeout(() => { image.remove(); image.src = ''; }, Math.floor(random() * 25)); }
+      jobs.push(image);
+    } else if (i % 3 === 1) {
+      const xhr = new XMLHttpRequest(); xhr.open('GET', url, true); xhr.send();
+      if (random() < 0.25) { cancelled++; setTimeout(() => xhr.abort(), Math.floor(random() * 25)); }
+      jobs.push(xhr);
+    } else {
+      const controller = new AbortController();
+      fetch(url, {signal: controller.signal}).catch(() => {});
+      if (random() < 0.25) { cancelled++; setTimeout(() => controller.abort(), Math.floor(random() * 25)); }
+      jobs.push(controller);
+    }
+  }
+  report('stressLaunched', {phase, count: jobs.length, cancelled});
+  if (phase === 1) {
+    setTimeout(() => { report('stressNavigating', {phase}); console.log('STRESS_NAVIGATING phase=' + phase); location.href = 'secondary-concurrency-content.html?phase=2'; }, 120);
+  } else {
+    setTimeout(() => report('stressPhaseComplete', {phase, count: jobs.length}), 600);
+  }
+})();
+</script></body></html>

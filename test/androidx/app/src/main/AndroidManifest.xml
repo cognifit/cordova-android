@@ -25,6 +25,14 @@
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/AppTheme">
+        <provider android:name="org.apache.cordova.SecondaryWebViewProcessInit"
+            android:authorities="${applicationId}.secondarywebview.init"
+            android:process=":secondarywebview"
+            android:initOrder="1000"
+            android:exported="false" />
+        <service android:name="org.apache.cordova.SecondaryWebViewService"
+            android:process=":secondarywebview"
+            android:exported="false" />
         <activity android:name=".EmbeddedWebViewActivity"
             android:configChanges="orientation|keyboardHidden"
             android:label="@string/app_name"

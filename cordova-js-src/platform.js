@@ -40,6 +40,7 @@ module.exports = {
         // Attach the internal statusBar utility to window.statusbar
         // see the file under plugin/android/statusbar.js
         modulemapper.clobbers('cordova/plugin/android/statusbar', 'window.statusbar');
+        modulemapper.clobbers('cordova/plugin/android/secondarywebview', 'cordova.secondaryWebView');
 
         var APP_PLUGIN_NAME = Number(cordova.platformVersion.split('.')[0]) >= 4 ? 'CoreAndroid' : 'App';
 

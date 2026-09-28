@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Secondary asset HTTP responses</title></head>
+<body>
+<h1>Secondary asset HTTP responses</h1>
+<pre id="results">Running…</pre>
+<script>
+(async function () {
+    const results = document.getElementById('results');
+    const lines = [];
+    const cases = [
+        { name: 'existing', url: 'secondary-http-status.html', status: 200 },
+        { name: 'missing', url: 'missing-secondary-asset.txt', status: 404 },
+        { name: 'denied', url: location.protocol + '//' + location.host + '/r/999/denied-secondary-asset.txt', status: 403 }
+    ];
+    function check(label, passed, detail) {
+        lines.push((passed ? 'PASS' : 'FAIL') + ' ' + label + ': ' + detail);
+        results.textContent = lines.join('\n');
+    }
+    for (const item of cases) {
+        try {
+            const response = await fetch(item.url);
+            check('fetch(' + item.name + ') HTTP ' + item.status,
+                response.ok === (item.status === 200) && response.status === item.status,
+                'ok=' + response.ok + ', status=' + response.status);
+        } catch (error) { check('fetch(' + item.name + ') HTTP ' + item.status, false, String(error)); }
+        try {
+            const request = new XMLHttpRequest();
+            request.open('GET', item.url, false);
+            request.send();
+            check('sync XHR ' + item.name + ' HTTP ' + item.status,
+                request.status === item.status, 'status=' + request.status);
+        } catch (error) { check('sync XHR ' + item.name + ' HTTP ' + item.status, false, String(error)); }
+        await new Promise(resolve => {
+            const request = new XMLHttpRequest();
+            request.open('GET', item.url, true);
+            request.onload = () => { check('async XHR ' + item.name + ' HTTP ' + item.status,
+                request.status === item.status, 'status=' + request.status); resolve(); };
+            request.onerror = () => { check('async XHR ' + item.name + ' HTTP ' + item.status,
+                false, 'network error; status=' + request.status); resolve(); };
+            request.send();
+        });
+    }
+    if (window.secondaryWebView) window.secondaryWebView.post('assetHttpTest', { lines });
+})();
+</script>
+</body>
+</html>

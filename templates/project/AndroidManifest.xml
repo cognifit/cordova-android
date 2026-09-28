@@ -49,6 +49,14 @@
         <provider android:name="androidx.core.content.FileProvider" android:authorities="${applicationId}.cdv.core.file.provider" android:exported="false" android:grantUriPermissions="true">
             <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/cdv_core_file_provider_paths" />
         </provider>
+        <provider android:name="org.apache.cordova.SecondaryWebViewProcessInit"
+            android:authorities="${applicationId}.secondarywebview.init"
+            android:process=":secondarywebview"
+            android:initOrder="1000"
+            android:exported="false" />
+        <service android:name="org.apache.cordova.SecondaryWebViewService"
+            android:process=":secondarywebview"
+            android:exported="false" />
     </application>
 
     <queries>
