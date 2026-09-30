@@ -103,6 +103,31 @@ public class SecondaryWebViewIsolatedTest {
         }
     }
 
+    @Test public void channelValidationSharedAndIsolated() throws Exception {
+        Assume.assumeTrue(Build.VERSION.SDK_INT >= 30);
+        StandardActivity activity = activityRule.getActivity();
+        for (String mode : new String[] {"shared", "isolated"}) {
+            AtomicReference<WebView> hostView = new AtomicReference<>();
+            CountDownLatch hostReady = new CountDownLatch(1);
+            activity.runOnUiThread(() -> { hostView.set(findWebView(activity.getWindow().getDecorView())); hostReady.countDown(); });
+            assertTrue(hostReady.await(2, TimeUnit.SECONDS));
+            activity.runOnUiThread(() -> activity.loadUrl("https://localhost/secondary-channel-validation-host.html?mode=" + mode));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+            String title = null;
+            while (System.nanoTime() < deadline) {
+                CountDownLatch sampled = new CountDownLatch(1);
+                AtomicReference<String> current = new AtomicReference<>();
+                activity.runOnUiThread(() -> { current.set(hostView.get().getTitle()); sampled.countDown(); });
+                assertTrue("Host main thread stalled during " + mode, sampled.await(1, TimeUnit.SECONDS));
+                title = current.get();
+                if (title != null && (title.startsWith("PASS secondary channel") || title.startsWith("FAIL secondary channel"))) break;
+                Thread.sleep(100);
+            }
+            assertTrue("Channel validation failed in " + mode + ": " + title + " " + pageResults(hostView.get()),
+                "PASS secondary channel validation".equals(title));
+        }
+    }
+
     @Test public void largeAssetStreamsThroughCompletedPipe() throws Exception {
         StandardActivity activity = activityRule.getActivity();
         File directory = new File(activity.getCacheDir(), "secondary-large-asset-test");

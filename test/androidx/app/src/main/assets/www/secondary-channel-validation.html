@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Secondary channel validation</title>
+<script>
+(function () {
+    const api = window.secondaryWebView;
+    const errors = [];
+    let unhandled = 0;
+    window.addEventListener('unhandledrejection', () => { unhandled++; });
+    const invalid = [NaN, Infinity, -Infinity, [1, NaN], {nested: {value: NaN}}, {missing: undefined}];
+    async function rejects(promise, code, label) {
+        try { await promise; errors.push(label + ' resolved'); }
+        catch (error) { if (!error || error.code !== code) errors.push(label + ': ' + JSON.stringify(error)); }
+    }
+    function posts(name, payload, label) {
+        if (api.post(name, payload) !== undefined) errors.push(label + ' returned a value');
+    }
+    function reply(sessionId, id, name, payload) {
+        const envelope = {sessionId, v: 1, id, kind: 'res', name, payload};
+        if (window.webkit) window.webkit.messageHandlers.secondaryWebView.postMessage(envelope).catch(() => {});
+        else window._secondaryNative.post(JSON.stringify(envelope));
+    }
+    async function run(sessionId) {
+        for (let i = 0; i < invalid.length; i++) {
+            posts('invalid', invalid[i], 'post ' + i);
+            await rejects(api.request('invalid', invalid[i]), 'INVALID_JSON', 'request ' + i);
+        }
+        posts('pageUnder', 'x'.repeat(1024 * 1024 - 1024), 'page under');
+        posts('over', 'x'.repeat(1024 * 1024 + 1), 'post over');
+        await rejects(api.request('over', 'x'.repeat(1024 * 1024 + 1)), 'MESSAGE_TOO_LARGE', 'request over');
+        posts('__secondaryChannelError', null, 'reserved post');
+        await rejects(api.request('__secondaryChannelError', null), 'INVALID_MESSAGE', 'reserved request');
+        posts('pageUndefined', undefined, 'undefined post');
+        if (await api.request('pageUndefinedRequest', undefined) !== true) errors.push('undefined request reply');
+        if (window.webkit) {
+            await window.webkit.messageHandlers.secondaryWebView.postMessage({sessionId, v: 1, id: 'bad', kind: 'evt', name: 'broken'});
+        } else if (window._secondaryBinary) {
+            window._secondaryBinary.postMessage(new Uint8Array([1, 2, 3]).buffer);
+        } else {
+            window._secondaryNative.post('not-json');
+        }
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (unhandled) errors.push('unhandledrejection count ' + unhandled);
+        posts('pageDone', {errors}, 'page done');
+    }
+    api.onMessage = function (message) {
+        if (message.name === 'begin') run(message.payload.sessionId).catch(error => posts('pageDone', {errors: [String(error)]}, 'page done'));
+        if (message.name === 'hostUnder') posts('hostAck', {length: message.payload.length}, 'host ack');
+        if (message.name === 'hostUndefined') posts('hostUndefinedAck', {isNull: message.payload === null}, 'host undefined ack');
+        if (message.name === 'hostUndefinedRequest') reply(message.sessionId, message.id, message.name, message.payload === null);
+        if (message.name === 'after') posts('afterAck', {ok: true}, 'after ack');
+    };
+})();
+</script>

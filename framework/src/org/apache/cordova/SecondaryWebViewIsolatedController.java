@@ -260,12 +260,16 @@ public final class SecondaryWebViewIsolatedController {
         });
     }
     public void send(JSONObject envelope, Result result) {
+        if (envelope == null) { result.error(error("INVALID_MESSAGE", "Envelope is required")); return; }
         if (sessionId == null || service == null) { result.error(error("TERMINATED", "Secondary process is unavailable")); return; }
         String id = sessionId; ISecondaryWebViewService target = service;
         io.execute(() -> {
             Bundle answer;
             try (ParcelFileDescriptor payload = SecondaryWebViewPipe.send(envelope.toString())) { answer = target.send(id, payload); }
-            catch (Exception e) { answer = errorBundle(e.getMessage() != null && e.getMessage().contains("MESSAGE_TOO_LARGE") ? "MESSAGE_TOO_LARGE" : "CHANNEL_ERROR", e.toString()); }
+            catch (Exception e) { String message = e.getMessage();
+                String code = message != null && message.contains("INVALID_JSON") ? "INVALID_JSON"
+                    : message != null && message.contains("MESSAGE_TOO_LARGE") ? "MESSAGE_TOO_LARGE" : "CHANNEL_ERROR";
+                answer = errorBundle(code, e.toString()); }
             Bundle response = answer;
             activity.runOnUiThread(() -> { if (!id.equals(sessionId)) { result.error(error("STALE_SESSION", "Session has ended")); return; } if (response.containsKey("errorCode")) result.error(error(response.getString("errorCode"), response.getString("errorMessage"))); else result.success(new JSONObject()); });
         });

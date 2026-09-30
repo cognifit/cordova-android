@@ -25,6 +25,7 @@ final class SecondaryWebViewPipe {
     private static final AtomicInteger nextWriter = new AtomicInteger();
 
     static ParcelFileDescriptor send(String text) throws IOException {
+        if (text == null) throw new IOException("INVALID_JSON");
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         if (bytes.length > MAX_BYTES) throw new IOException("MESSAGE_TOO_LARGE");
         ParcelFileDescriptor[] pair = ParcelFileDescriptor.createPipe();
@@ -38,7 +39,8 @@ final class SecondaryWebViewPipe {
     }
 
     static void checkJsonDepth(String text) throws IOException {
-        if (text == null || text.length() > MAX_BYTES) throw new IOException("MESSAGE_TOO_LARGE");
+        if (text == null) throw new IOException("INVALID_MESSAGE");
+        if (text.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES) throw new IOException("MESSAGE_TOO_LARGE");
         int depth = 0;
         boolean quoted = false, escaped = false;
         for (int i = 0; i < text.length(); i++) {

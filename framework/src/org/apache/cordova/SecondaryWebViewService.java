@@ -107,8 +107,9 @@ public final class SecondaryWebViewService extends Service {
                 return onMain(() -> { if (!id.equals(sessionId)) return error("STALE_SESSION", "Session has ended"); try { manager.send(new JSONObject(text)); return ok(); } catch (SecondaryWebViewManager.Failure e) { return error(e.code, e.getMessage()); } catch (Exception e) { return error("INVALID_MESSAGE", e.toString()); } });
             } catch (Exception e) {
                 String message = e.getMessage();
-                String code = message != null && message.contains("MESSAGE_TOO_LARGE") ? "MESSAGE_TOO_LARGE"
-                    : message != null && message.contains("JSON_DEPTH_EXCEEDED") ? "INVALID_MESSAGE" : "CHANNEL_ERROR";
+                String code = message != null && message.contains("INVALID_JSON") ? "INVALID_JSON"
+                    : message != null && message.contains("MESSAGE_TOO_LARGE") ? "MESSAGE_TOO_LARGE"
+                    : message != null && (message.contains("INVALID_MESSAGE") || message.contains("JSON_DEPTH_EXCEEDED")) ? "INVALID_MESSAGE" : "CHANNEL_ERROR";
                 return error(code, e.toString());
             }
         }

@@ -1,0 +1,78 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>RUN secondary channel validation</title>
+<pre id="results"></pre>
+<script src="cordova.js"></script>
+<script>
+document.addEventListener('deviceready', async function () {
+    const api = cordova.secondaryWebView;
+    const errors = [];
+    const channelErrors = [];
+    const messages = new Map();
+    let readyResolve;
+    const ready = new Promise(resolve => { readyResolve = resolve; });
+    api.onEvent(event => {
+        if (event.type === 'ready') readyResolve();
+        if (event.type === 'channelError') channelErrors.push(event.detail);
+        if (event.type === 'message') {
+            if (event.detail.name === '__secondaryChannelError') errors.push('reserved message delivered');
+            messages.set(event.detail.name, event.detail.payload);
+            if (event.detail.name === 'pageUndefinedRequest') {
+                api.send({v: 1, id: event.detail.id, kind: 'res', name: event.detail.name, payload: event.detail.payload === null}).catch(error => errors.push(String(error)));
+            }
+        }
+    });
+    async function rejects(promise, code, label) {
+        try { await promise; errors.push(label + ' resolved'); }
+        catch (error) { if (!error || error.code !== code) errors.push(label + ': ' + JSON.stringify(error)); }
+    }
+    async function until(condition, label) {
+        const end = Date.now() + 12000;
+        while (!condition()) {
+            if (Date.now() > end) throw new Error('Timed out: ' + label);
+            await new Promise(resolve => setTimeout(resolve, 25));
+        }
+    }
+    try {
+        const mode = new URL(location.href).searchParams.get('mode') || 'shared';
+        const config = {url: 'www/secondary-channel-validation.html', processIsolation: mode, zOrder: mode === 'isolated' ? 'below' : 'above'};
+        if (cordova.platformId === 'android' && mode === 'isolated') config.unsafeAllowIsolatedBelowApi33 = true;
+        const created = await api.create(config);
+        await ready;
+        const invalid = [NaN, Infinity, -Infinity, [1, NaN], {nested: {value: NaN}}, {missing: undefined}];
+        for (let i = 0; i < invalid.length; i++) {
+            const envelope = {v: 1, id: 'host-' + i, kind: 'evt', name: 'invalid', payload: invalid[i]};
+            await rejects(api.send(envelope), 'INVALID_JSON', 'send ' + i);
+            await rejects(api.post('invalid', invalid[i]), 'INVALID_JSON', 'post ' + i);
+            await rejects(api.request('invalid', invalid[i]), 'INVALID_JSON', 'request ' + i);
+        }
+        await rejects(api.send({v: 1, id: 'bad', kind: 'evt', name: 'bad'}), 'INVALID_MESSAGE', 'bad envelope');
+        await rejects(api.send({v: 1, id: 'reserved', kind: 'evt', name: '__secondaryChannelError', payload: null}), 'INVALID_MESSAGE', 'reserved send');
+        await rejects(api.post('__secondaryChannelError', null), 'INVALID_MESSAGE', 'reserved post');
+        await rejects(api.request('__secondaryChannelError', null), 'INVALID_MESSAGE', 'reserved request');
+        await api.post('hostUnder', 'x'.repeat(1024 * 1024 - 1024));
+        await until(() => messages.has('hostAck'), 'host under delivered');
+        if (messages.get('hostAck').length !== 1024 * 1024 - 1024) errors.push('host under wrong length');
+        await api.post('hostUndefined', undefined);
+        await until(() => messages.has('hostUndefinedAck'), 'host undefined delivered');
+        if (!messages.get('hostUndefinedAck').isNull) errors.push('host undefined post not null');
+        if (await api.request('hostUndefinedRequest', undefined) !== true) errors.push('host undefined request not null');
+        await rejects(api.post('over', 'x'.repeat(1024 * 1024 + 1)), 'MESSAGE_TOO_LARGE', 'host post over');
+        await rejects(api.request('over', 'x'.repeat(1024 * 1024 + 1)), 'MESSAGE_TOO_LARGE', 'host request over');
+        await api.post('begin', {sessionId: created.sessionId});
+        await until(() => messages.has('pageDone') && messages.has('pageUnder') && messages.has('pageUndefined') && messages.has('pageUndefinedRequest'), 'page validation');
+        errors.push(...messages.get('pageDone').errors);
+        if (messages.get('pageUnder').length !== 1024 * 1024 - 1024) errors.push('page under wrong length');
+        if (messages.get('pageUndefined') !== null || messages.get('pageUndefinedRequest') !== null) errors.push('page undefined not null');
+        await until(() => channelErrors.length >= 17, 'channelError events');
+        if (channelErrors.filter(code => code === 'INVALID_JSON').length < 12) errors.push('missing INVALID_JSON events');
+        if (channelErrors.filter(code => code === 'MESSAGE_TOO_LARGE').length < 2) errors.push('missing MESSAGE_TOO_LARGE events');
+        if (channelErrors.filter(code => code === 'INVALID_MESSAGE').length < 3) errors.push('missing INVALID_MESSAGE events');
+        await api.post('after', null);
+        await until(() => messages.has('afterAck'), 'session remains usable');
+        await api.destroy();
+    } catch (error) { errors.push(String(error)); }
+    document.getElementById('results').textContent = errors.join('\n') || 'PASS';
+    document.title = errors.length ? 'FAIL secondary channel validation' : 'PASS secondary channel validation';
+}, {once: true});
+</script>

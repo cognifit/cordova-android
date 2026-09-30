@@ -743,7 +743,15 @@ public final class SecondaryWebViewManager {
         final String id;
         Bridge(String id) { this.id = id; }
         @JavascriptInterface public void post(String json) {
-            if (json == null || json.getBytes(StandardCharsets.UTF_8).length > MAX_MESSAGE_BYTES) { handler.post(() -> emit("channelError", "MESSAGE_TOO_LARGE")); return; }
+            if (json == null) { handler.post(() -> emit("channelError", "INVALID_MESSAGE")); return; }
+            if (json.getBytes(StandardCharsets.UTF_8).length > MAX_MESSAGE_BYTES) {
+                String code;
+                try { code = validEnvelope(new JSONObject(json)) ? "MESSAGE_TOO_LARGE" : "INVALID_MESSAGE"; }
+                catch (JSONException | RuntimeException e) { code = "INVALID_MESSAGE"; }
+                String result = code;
+                handler.post(() -> emit("channelError", result));
+                return;
+            }
             handler.post(() -> inbound(id, json));
         }
     }
@@ -767,6 +775,12 @@ public final class SecondaryWebViewManager {
             Object wireVersion = envelope.opt("v");
             if (!ready || !(wireVersion instanceof Number) || ((Number)wireVersion).doubleValue() != version) return;
             if (!validEnvelope(envelope)) { emit("channelError", "INVALID_MESSAGE"); return; }
+            if ("__secondaryChannelError".equals(envelope.optString("name"))) {
+                String code = envelope.optString("payload");
+                if ("evt".equals(envelope.optString("kind")) && "0".equals(envelope.optString("id")) && ("INVALID_JSON".equals(code) || "MESSAGE_TOO_LARGE".equals(code) || "INVALID_MESSAGE".equals(code))) emit("channelError", code);
+                else emit("channelError", "INVALID_MESSAGE");
+                return;
+            }
             if ("res".equals(envelope.optString("kind"))) {
                 String responseId = envelope.optString("id");
                 for (int i = 0; i < pendingIds.length; i++) if (responseId.equals(pendingIds[i])) {
@@ -792,13 +806,19 @@ public final class SecondaryWebViewManager {
         } catch (JSONException | IOException e) { emit("channelError", "INVALID_MESSAGE"); }
     }
     private void inboundPacket(String id, byte[] packet) {
-        if (!id.equals(sessionId) || packet == null || packet.length > MAX_MESSAGE_BYTES || packet.length < 4) { emit("channelError", "MESSAGE_TOO_LARGE"); return; }
+        if (!id.equals(sessionId)) return;
+        if (packet == null || packet.length < 4) { emit("channelError", "INVALID_MESSAGE"); return; }
         try {
             ByteBuffer buffer = ByteBuffer.wrap(packet);
             int length = buffer.getInt();
             if (length < 2 || length > buffer.remaining()) { emit("channelError", "INVALID_MESSAGE"); return; }
             byte[] header = new byte[length]; buffer.get(header);
             String headerText = new String(header, StandardCharsets.UTF_8);
+            if (packet.length > MAX_MESSAGE_BYTES) {
+                try { emit("channelError", validEnvelope(new JSONObject(headerText)) ? "MESSAGE_TOO_LARGE" : "INVALID_MESSAGE"); }
+                catch (JSONException | RuntimeException e) { emit("channelError", "INVALID_MESSAGE"); }
+                return;
+            }
             SecondaryWebViewPipe.checkJsonDepth(headerText);
             JSONObject envelope = new JSONObject(headerText);
             if (envelope.optBoolean("binary")) {
@@ -833,6 +853,7 @@ public final class SecondaryWebViewManager {
         if (webView == null) throw new Failure("TERMINATED", "Secondary renderer has terminated");
         if (envelope.has("sessionId") && !sessionId.equals(envelope.optString("sessionId"))) return;
         if (!validEnvelope(envelope)) throw new Failure("INVALID_MESSAGE", "Envelope requires id, kind, name and payload or err");
+        if ("__secondaryChannelError".equals(envelope.optString("name"))) throw new Failure("INVALID_MESSAGE", "Reserved channel message name");
         if (envelope.toString().getBytes(StandardCharsets.UTF_8).length > MAX_MESSAGE_BYTES) throw new Failure("MESSAGE_TOO_LARGE", "Channel message exceeds 1 MiB");
         try { envelope.put("v", PROTOCOL_VERSION); envelope.put("sessionId", sessionId); } catch (JSONException ignored) { }
         JSONObject binaryTag = envelope.optJSONObject("payload");
@@ -851,13 +872,21 @@ public final class SecondaryWebViewManager {
             + "const b64=a=>{let out='';new Uint8Array(a).forEach(x=>out+=String.fromCharCode(x));return btoa(out);};"
             + "const unb64=x=>Uint8Array.from(atob(x),c=>c.charCodeAt(0)).buffer;"
             + "function revive(x,raw){if(!x||typeof x!=='object')return x;if(x.__secondaryArrayBuffer)return unb64(x.__secondaryArrayBuffer);if(raw&&x.__secondaryBinaryOffset!==undefined)return raw.slice(x.__secondaryBinaryOffset,x.__secondaryBinaryOffset+x.length).buffer;if(Array.isArray(x))return x.map(v=>revive(v,raw));Object.keys(x).forEach(k=>x[k]=revive(x[k],raw));return x;}"
-            + "function post(e){e.sessionId=s;let payload=e.payload instanceof ArrayBuffer?e.payload:null;"
-            + "if(window._secondaryBinary){if(payload){delete e.payload;e.binary=true;}let h=new TextEncoder().encode(JSON.stringify(e)),p=payload?new Uint8Array(payload):new Uint8Array(0),a=new Uint8Array(4+h.length+p.length),v=new DataView(a.buffer);v.setUint32(0,h.length);a.set(h,4);a.set(p,4+h.length);_secondaryBinary.postMessage(a.buffer);}"
-            + "else{if(payload)e.payload={__secondaryArrayBuffer:b64(payload)};_secondaryNative.post(JSON.stringify(e));}}"
-            + "const api={request(name,payload){return new Promise((resolve,reject)=>{let id=String(++seq);pending.set(id,{resolve,reject});post({v:1,id,kind:'req',name,payload});});},"
-            + "post(name,payload){post({v:1,id:String(++seq),kind:'evt',name,payload});},"
+            + "const valid=(v,seen)=>{if(v===null||typeof v==='string'||typeof v==='boolean')return true;if(typeof v==='number')return Number.isFinite(v);if(typeof v!=='object'||seen.has(v))return false;let p=Object.getPrototypeOf(v);if(!Array.isArray(v)&&p!==null&&Object.getPrototypeOf(p)!==null||Object.getOwnPropertySymbols(v).length)return false;seen.add(v);let keys=Object.keys(v);if(Array.isArray(v)&&keys.length!==v.length)return false;for(let k of keys)if(!valid(v[k],seen))return false;seen.delete(v);return true;};"
+            + "const failure=c=>({code:c,message:c==='INVALID_JSON'?'Channel message is not valid JSON':c==='MESSAGE_TOO_LARGE'?'Channel message exceeds 1 MiB':'Reserved channel message name'});"
+            + "const report=c=>{post({v:1,id:'0',kind:'evt',name:'__secondaryChannelError',payload:c},true).catch(()=>{});};"
+            + "function post(e,internal){e.sessionId=s;let payload,packet,json,binary=!!window._secondaryBinary;try{payload=e.payload instanceof ArrayBuffer?e.payload:null;if(!internal&&e.name==='__secondaryChannelError')throw failure('INVALID_MESSAGE');"
+            + "if(binary){if(!valid(payload?Object.assign({},e,{payload:null}):e,new Set()))throw failure('INVALID_JSON');"
+            + "if(payload){delete e.payload;e.binary=true;}let h=new TextEncoder().encode(JSON.stringify(e)),p=payload?new Uint8Array(payload):new Uint8Array(0);"
+            + "if(4+h.length+p.length>1048576)throw failure('MESSAGE_TOO_LARGE');let a=new Uint8Array(4+h.length+p.length),v=new DataView(a.buffer);v.setUint32(0,h.length);a.set(h,4);a.set(p,4+h.length);packet=a.buffer;}"
+            + "else{if(payload)e.payload={__secondaryArrayBuffer:b64(payload)};if(!valid(e,new Set()))throw failure('INVALID_JSON');json=JSON.stringify(e);"
+            + "if(new TextEncoder().encode(json).length>1048576)throw failure('MESSAGE_TOO_LARGE');}}"
+            + "catch(x){let err=x&&x.code?x:failure('INVALID_JSON');console.warn('[SecondaryWebView] '+err.code+': '+err.message);if(!internal)report(err.code);return Promise.reject(err);}"
+            + "try{if(binary)_secondaryBinary.postMessage(packet);else _secondaryNative.post(json);}catch(_){return Promise.resolve(false);}return Promise.resolve(true);}"
+            + "const api={request(name,payload){let value=payload===undefined?null:payload;return new Promise((resolve,reject)=>{let id=String(++seq);pending.set(id,{resolve,reject});post({v:1,id,kind:'req',name,payload:value}).catch(err=>{pending.delete(id);reject(err);});});},"
+            + "post(name,payload){post({v:1,id:String(++seq),kind:'evt',name,payload:payload===undefined?null:payload}).catch(()=>{});},"
             + "subscribe(name,options){return api.request('subscribe',{streamName:name,...options});},"
-            + "unsubscribe(id){post({v:1,id:String(++seq),kind:'evt',name:'unsubscribe',payload:id});},"
+            + "unsubscribe(id){post({v:1,id:String(++seq),kind:'evt',name:'unsubscribe',payload:id}).catch(()=>{});},"
             + "onMessage:null,_receive(e){if(e.sessionId!==s||e.v!==1)return;e.payload=revive(e.payload);"
             + "if(e.kind==='res'){let p=pending.get(e.id);if(p){pending.delete(e.id);e.err?p.reject(e.err):p.resolve(e.payload);}}"
             + "else{if(api.onMessage)api.onMessage(e);let set=listeners.get(e.name);if(set)set.forEach(f=>f(e.payload));"
@@ -865,8 +894,8 @@ public final class SecondaryWebViewManager {
             + "on(name,fn){let set=listeners.get(name)||new Set();set.add(fn);listeners.set(name,set);return()=>set.delete(fn);}};"
             + "Object.defineProperty(window,'secondaryWebView',{value:api});"
             + "if(window._secondaryBinary)window.addEventListener('message',ev=>{if(!(ev.data instanceof ArrayBuffer))return;let a=new Uint8Array(ev.data),v=new DataView(ev.data),n=v.getUint32(0),h=JSON.parse(new TextDecoder().decode(a.slice(4,4+n)));if(h.binary){h.payload=a.slice(4+n).buffer;delete h.binary;}if(h.binaryFrame){h.payload=revive(h.payload,a.slice(4+n));delete h.binaryFrame;}api._receive(h);});"
-            + "const hello=()=>post({v:1,id:String(++seq),kind:'req',name:'handshake',payload:[1]});if(document.readyState==='complete')hello();else window.addEventListener('load',hello,{once:true});"
-            + (heartbeatMs > 0 ? "setInterval(()=>post({v:1,id:'0',kind:'evt',name:'heartbeat',payload:null})," + Math.max(500, heartbeatMs) + ");" : "")
+            + "const hello=()=>post({v:1,id:String(++seq),kind:'req',name:'handshake',payload:[1]}).catch(()=>{});if(document.readyState==='complete')hello();else window.addEventListener('load',hello,{once:true});"
+            + (heartbeatMs > 0 ? "setInterval(()=>{post({v:1,id:'0',kind:'evt',name:'heartbeat',payload:null}).catch(()=>{});}," + Math.max(500, heartbeatMs) + ");" : "")
             + "})();";
     }
     private void addMetric(int index, long amount) { if (countersEnabled) metrics.addAndGet(index, amount); }
@@ -996,7 +1025,7 @@ public final class SecondaryWebViewManager {
                 payload.put("streamName", sub.streamName);
                 payload.put("data", encodeStreamValue(sub.batch ? sub.samples : sub.latest, raw));
                 frame.put(row.getKey(), payload);
-            } catch (JSONException e) { Log.e(TAG, "Frame delivery failed", e); }
+            } catch (JSONException e) { Log.e(TAG, "Frame delivery failed", e); emit("channelError", "INVALID_JSON"); }
             sub.latest = null; sub.samples = new JSONArray(); sub.lastDeliveryNs = now;
         }
         if (frame.length() > 0) { JSONObject envelope = new JSONObject(); try {
@@ -1006,7 +1035,7 @@ public final class SecondaryWebViewManager {
                 int bytes = postPacket(envelope, raw.toByteArray(), true);
                 addMetric(9, 1); addMetric(10, bytes);
             } else send(envelope);
-        } catch (JSONException | Failure e) { Log.e(TAG, "Frame delivery failed", e); emit("channelError", e.toString()); } }
+        } catch (JSONException | Failure e) { Log.e(TAG, "Frame delivery failed", e); emit("channelError", e instanceof Failure ? ((Failure)e).code : "INVALID_JSON"); } }
         if (pending) { frameScheduled = true; Choreographer.getInstance().postFrameCallback(frameTimeNanos -> flushFrame()); }
     }
     private static final class Subscription {

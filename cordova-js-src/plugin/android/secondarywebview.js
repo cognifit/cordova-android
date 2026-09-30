@@ -25,6 +25,43 @@ function encode (envelope) {
     }
     return envelope;
 }
+function channelError (code) {
+    var message = code === 'INVALID_JSON'
+        ? 'Channel message is not valid JSON'
+        : code === 'MESSAGE_TOO_LARGE'
+            ? 'Channel message exceeds 1 MiB'
+            : 'Reserved channel message name';
+    var error = new Error(message);
+    error.code = code;
+    return error;
+}
+function validJson (value, ancestors) {
+    if (value === null || typeof value === 'string' || typeof value === 'boolean') return true;
+    if (typeof value === 'number') return Number.isFinite(value);
+    if (typeof value !== 'object' || ancestors.has(value)) return false;
+    var prototype = Object.getPrototypeOf(value);
+    if (!Array.isArray(value) && prototype !== null && Object.getPrototypeOf(prototype) !== null) return false;
+    if (Object.getOwnPropertySymbols(value).length) return false;
+    ancestors.add(value);
+    var keys = Object.keys(value);
+    if (Array.isArray(value) && keys.length !== value.length) return false;
+    for (var i = 0; i < keys.length; i++) {
+        if (!validJson(value[keys[i]], ancestors)) return false;
+    }
+    ancestors.delete(value);
+    return true;
+}
+function checkedEnvelope (envelope) {
+    try {
+        var value = encode(Object.assign({ sessionId: sessionId }, envelope));
+        if (value.name === '__secondaryChannelError') throw channelError('INVALID_MESSAGE');
+        if (!validJson(value, new Set())) throw channelError('INVALID_JSON');
+        if (new TextEncoder().encode(JSON.stringify(value)).length > 1024 * 1024) throw channelError('MESSAGE_TOO_LARGE');
+        return value;
+    } catch (error) {
+        throw error && error.code ? error : channelError('INVALID_JSON');
+    }
+}
 function decode (envelope) {
     if (envelope && envelope.payload && envelope.payload.__secondaryArrayBuffer) {
         envelope.payload = Uint8Array.from(atob(envelope.payload.__secondaryArrayBuffer), function (c) { return c.charCodeAt(0); }).buffer;
@@ -78,13 +115,16 @@ var api = {
     },
     destroy: function () { return command('destroy').then(function (value) { sessionId = null; return value; }); },
     setTouchRegions: function (regions) { return command('setTouchRegions', [regions]); },
-    send: function (envelope) { return command('send', [encode(Object.assign({ sessionId: sessionId }, envelope))]); },
+    send: function (envelope) {
+        try { return command('send', [checkedEnvelope(envelope)]); } catch (error) { return Promise.reject(error); }
+    },
     post: function (name, payload) { return api.send({ v: version, id: String(++nextId), kind: 'evt', name: name, payload: payload === undefined ? null : payload }); },
     request: function (name, payload) {
         var id = String(++nextId);
+        var value = payload === undefined ? null : payload;
         return new Promise(function (resolve, reject) {
             pending.set(id, { resolve: resolve, reject: reject });
-            api.send({ v: version, id: id, kind: 'req', name: name, payload: payload === undefined ? null : payload }).catch(function (error) { pending.delete(id); reject(error); });
+            api.send({ v: version, id: id, kind: 'req', name: name, payload: value }).catch(function (error) { pending.delete(id); reject(error); });
         });
     },
     onEvent: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; },
