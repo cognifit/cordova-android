@@ -182,6 +182,7 @@ public final class SecondaryWebViewManager {
         SecondaryWebViewStreams.register(this);
     }
     public boolean hasSession() { return sessionId != null; }
+    /** Producer threads read only volatile lifecycle gates and an immutable volatile subscription snapshot. */
     boolean hasStreamSubscriber(String streamName) { return webView != null && !backgrounded && !dead && subscribedStreams.contains(streamName); }
     void rejectStreamSample(String streamName) { handler.post(() -> { if (hasStreamSubscriber(streamName)) emit("channelError", "INVALID_JSON"); }); }
     void setSubscriptionObserver(SubscriptionObserver observer) { subscriptionObserver = observer; observer.changed(subscribedStreams); }
