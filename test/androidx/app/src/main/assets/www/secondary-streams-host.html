@@ -18,6 +18,8 @@ document.addEventListener('deviceready', async function () {
         if (message.name === 'rateCount') window.streamState.rateCount = message.payload;
         if (message.name === 'fastResult') window.streamState.fastValues = message.payload;
         if (message.name === 'batchOnlyResult') window.streamState.batchValues = message.payload;
+        if (message.name === 'jitterResult') window.streamState.jitterValues = message.payload;
+        if (message.name === 'halfResult') window.streamState.halfValues = message.payload;
     });
     try {
         const mode = new URL(location.href).searchParams.get('mode') || 'shared';

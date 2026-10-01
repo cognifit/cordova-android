@@ -201,6 +201,11 @@ public class SecondaryWebViewIsolatedTest {
             deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
             while (System.nanoTime() < deadline && streamState(host).getJSONArray("channelErrors").length() == errorsBeforeFast) Thread.sleep(50);
             assertTrue("Accepted invalid sample not reported in " + mode, streamState(host).getJSONArray("channelErrors").length() > errorsBeforeFast);
+            SecondaryWebViewStreams.push("nativeFast", 2000);
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline && !streamState(host).getJSONArray("fastValues").toString().contains("2000")) Thread.sleep(50);
+            int fastBefore = streamState(host).getJSONArray("fastValues").length();
+            assertTrue("Valid sample after invalid was gated in " + mode, streamState(host).getJSONArray("fastValues").toString().contains("2000"));
             Thread fastProducer = new Thread(() -> {
                 for (int i = 0; i < 50; i++) {
                     SecondaryWebViewStreams.push("nativeFast", i);
@@ -218,7 +223,20 @@ public class SecondaryWebViewIsolatedTest {
             }
             JSONArray expectedBatch = new JSONArray(); for (int i = 0; i < 50; i++) expectedBatch.put(i);
             assertTrue("Batch samples lost in " + mode + ": " + state, state != null && expectedBatch.toString().equals(state.getJSONArray("batchValues").toString()));
-            assertTrue("Latest samples not thinned in " + mode, state.getJSONArray("fastValues").length() > 0 && state.getJSONArray("fastValues").length() <= 8);
+            assertTrue("Latest samples not thinned in " + mode, state.getJSONArray("fastValues").length() > fastBefore && state.getJSONArray("fastValues").length() - fastBefore <= 8);
+            Thread paced = new Thread(() -> {
+                try {
+                    for (int i = 0; i < 20; i++) { SecondaryWebViewStreams.push("nativeJitter", i); Thread.sleep(i % 2 == 0 ? 53 : 47); }
+                    for (int i = 0; i < 40; i++) { SecondaryWebViewStreams.push("nativeHalf", i); Thread.sleep(25); }
+                } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            }, "SecondaryPacedStreamProducer");
+            paced.start(); paced.join(5000);
+            assertTrue("Paced producer stalled", !paced.isAlive());
+            Thread.sleep(300);
+            state = streamState(host);
+            assertTrue("Jittered producer lost samples in " + mode, state.getJSONArray("jitterValues").length() >= 17);
+            assertTrue("Half-period producer was not thinned in " + mode,
+                state.getJSONArray("halfValues").length() >= 16 && state.getJSONArray("halfValues").length() <= 24);
             Thread.sleep(300);
             assertTrue("Rate cap failed in " + mode, streamState(host).getInt("rateCount") == 1);
             CountDownLatch paused = new CountDownLatch(1);

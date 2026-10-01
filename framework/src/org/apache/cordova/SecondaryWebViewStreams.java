@@ -27,7 +27,30 @@ public final class SecondaryWebViewStreams {
         final boolean batch;
         StreamInfo(int rateHz, boolean batch) { this.rateHz = rateHz; this.batch = batch; }
     }
-    private static final class RateGate { long lastAcceptedNs; }
+    static final class RateGate {
+        private long lastAcceptedNs;
+        private long reservedAtNs;
+        private boolean inFlight;
+
+        synchronized boolean reserveAt(long nowNs, double rateHz) {
+            boolean interrupted = false;
+            while (inFlight) {
+                try { wait(); }
+                catch (InterruptedException e) { interrupted = true; }
+            }
+            if (interrupted) Thread.currentThread().interrupt();
+            if (lastAcceptedNs != 0 && (nowNs - lastAcceptedNs) / 1_000_000_000.0 < 0.9 / rateHz) return false;
+            inFlight = true;
+            reservedAtNs = nowNs;
+            return true;
+        }
+
+        synchronized void finish(boolean valid) {
+            if (valid) lastAcceptedNs = reservedAtNs;
+            inFlight = false;
+            notifyAll();
+        }
+    }
     private static final Object lock = new Object();
     private static final Set<SecondaryWebViewManager> shared = Collections.newSetFromMap(new WeakHashMap<>());
     private static final Set<SecondaryWebViewIsolatedController> isolated = Collections.newSetFromMap(new WeakHashMap<>());
@@ -84,12 +107,10 @@ public final class SecondaryWebViewStreams {
             if (batch) snapshot = snapshot(sample);
             else {
                 RateGate gate = rateGates.computeIfAbsent(streamName, key -> new RateGate());
-                synchronized (gate) {
-                    long now = SystemClock.elapsedRealtimeNanos();
-                    if (gate.lastAcceptedNs != 0 && now - gate.lastAcceptedNs < 1_000_000_000.0 / maximum) return;
-                    snapshot = snapshot(sample);
-                    gate.lastAcceptedNs = now;
-                }
+                if (!gate.reserveAt(SystemClock.elapsedRealtimeNanos(), maximum)) return;
+                boolean valid = false;
+                try { snapshot = snapshot(sample); valid = true; }
+                finally { gate.finish(valid); }
             }
         } catch (JSONException | RuntimeException e) {
             if (locals != null) for (SecondaryWebViewManager manager : locals) manager.rejectStreamSample(streamName);

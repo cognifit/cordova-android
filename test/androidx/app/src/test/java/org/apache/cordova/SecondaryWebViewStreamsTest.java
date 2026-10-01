@@ -12,6 +12,9 @@ import org.junit.Test;
 import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -44,6 +47,48 @@ public class SecondaryWebViewStreamsTest {
         SecondaryWebViewStreams.push("missing", Double.NaN);
         assertFalse(SecondaryWebViewStreams.hasSubscriber("missing"));
         assertEquals(0.0, SecondaryWebViewStreams.maxRateHz("missing"), 0.0);
+    }
+
+    @Test public void rateGateUsesNinetyPercentAndSerializesProducers() throws Exception {
+        SecondaryWebViewStreams.RateGate gate = new SecondaryWebViewStreams.RateGate();
+        long period = 50_000_000L;
+        assertTrue(gate.reserveAt(1_000_000_000L, 20)); gate.finish(true);
+        assertFalse(gate.reserveAt(1_000_000_000L + period * 89 / 100, 20));
+        assertTrue(gate.reserveAt(1_000_000_000L + period * 91 / 100, 20)); gate.finish(false);
+        assertTrue(gate.reserveAt(1_000_000_000L + period * 91 / 100, 20)); gate.finish(true);
+
+        gate = new SecondaryWebViewStreams.RateGate();
+        long now = 1_000_000_000L;
+        int accepted = 0;
+        for (int i = 0; i < 20; i++) {
+            if (gate.reserveAt(now, 20)) { accepted++; gate.finish(true); }
+            now += period * (i % 2 == 0 ? 106 : 94) / 100;
+        }
+        assertEquals(20, accepted);
+        gate = new SecondaryWebViewStreams.RateGate(); now = 1_000_000_000L; accepted = 0;
+        for (int i = 0; i < 40; i++) {
+            if (gate.reserveAt(now, 20)) { accepted++; gate.finish(true); }
+            now += period / 2;
+        }
+        assertTrue(accepted >= 19 && accepted <= 21);
+
+        SecondaryWebViewStreams.RateGate concurrent = new SecondaryWebViewStreams.RateGate();
+        AtomicInteger concurrentAccepted = new AtomicInteger();
+        CountDownLatch start = new CountDownLatch(1), done = new CountDownLatch(2);
+        Runnable producer = () -> {
+            try {
+                start.await();
+                if (concurrent.reserveAt(1_000_000_000L, 20)) {
+                    concurrentAccepted.incrementAndGet();
+                    Thread.sleep(10);
+                    concurrent.finish(true);
+                }
+            } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            finally { done.countDown(); }
+        };
+        new Thread(producer).start(); new Thread(producer).start(); start.countDown();
+        assertTrue(done.await(2, TimeUnit.SECONDS));
+        assertEquals(1, concurrentAccepted.get());
     }
 
     private static void reject(Object value) throws Exception {

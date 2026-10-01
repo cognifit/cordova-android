@@ -4,8 +4,8 @@
 <script>
 (function () {
     const api = window.secondaryWebView;
-    let latestId, batchId, rateId, fastId, fasterId, batchOnlyId, latest, batch, burstReported = false, rateCount = 0;
-    const fastValues = [], batchValues = [];
+    let latestId, batchId, rateId, fastId, fasterId, batchOnlyId, jitterId, halfId, latest, batch, burstReported = false, rateCount = 0;
+    const fastValues = [], batchValues = [], jitterValues = [], halfValues = [];
     api.onMessage = function (message) {
         if (message.name === 'begin') {
             Promise.all([
@@ -14,9 +14,11 @@
                 api.subscribe('nativeRate', {rateHz: 1, coalesce: 'latest'}),
                 api.subscribe('nativeFast', {rateHz: 10, coalesce: 'latest'}),
                 api.subscribe('nativeFast', {rateHz: 30, coalesce: 'latest'}),
-                api.subscribe('nativeBatchOnly', {rateHz: 20, coalesce: 'batch'})
+                api.subscribe('nativeBatchOnly', {rateHz: 20, coalesce: 'batch'}),
+                api.subscribe('nativeJitter', {rateHz: 20, coalesce: 'latest'}),
+                api.subscribe('nativeHalf', {rateHz: 20, coalesce: 'latest'})
             ]).then(ids => {
-                [latestId, batchId, rateId, fastId, fasterId, batchOnlyId] = ids;
+                [latestId, batchId, rateId, fastId, fasterId, batchOnlyId, jitterId, halfId] = ids;
                 return api.request('subscribe', {streamName: 'overCap', rateHz: 61, coalesce: 'latest'})
                     .then(() => { throw new Error('rateHz 61 accepted'); }, error => {
                         if (!error || error.code !== 'INVALID_SUBSCRIPTION') throw new Error('wrong rate cap error');
@@ -35,6 +37,8 @@
         if (frame[rateId]) { rateCount++; api.post('rateCount', rateCount); }
         if (frame[fasterId]) { fastValues.push(frame[fasterId].data); api.post('fastResult', fastValues); }
         if (frame[batchOnlyId]) { batchValues.push(...frame[batchOnlyId].data); api.post('batchOnlyResult', batchValues); }
+        if (frame[jitterId]) { jitterValues.push(frame[jitterId].data); api.post('jitterResult', jitterValues); }
+        if (frame[halfId]) { halfValues.push(frame[halfId].data); api.post('halfResult', halfValues); }
     };
 })();
 </script>
