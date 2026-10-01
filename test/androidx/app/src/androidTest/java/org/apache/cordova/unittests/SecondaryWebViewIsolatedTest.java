@@ -14,6 +14,8 @@ import androidx.test.runner.AndroidJUnit4;
 
 import org.apache.cordova.SecondaryWebViewIsolatedController;
 import org.apache.cordova.SecondaryWebViewManager;
+import org.apache.cordova.SecondaryWebViewStreams;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Assume;
 import org.junit.Rule;
@@ -23,6 +25,8 @@ import org.junit.runner.RunWith;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
@@ -67,6 +71,17 @@ public class SecondaryWebViewIsolatedTest {
         activityRule.getActivity().runOnUiThread(() -> view.evaluateJavascript("document.getElementById('results').textContent", value -> { result.set(value); latch.countDown(); }));
         latch.await(2, TimeUnit.SECONDS);
         return result.get();
+    }
+    private String evaluate(WebView view, String expression) throws InterruptedException {
+        CountDownLatch latch = new CountDownLatch(1);
+        AtomicReference<String> value = new AtomicReference<>();
+        activityRule.getActivity().runOnUiThread(() -> view.evaluateJavascript(expression, result -> { value.set(result); latch.countDown(); }));
+        assertTrue("Host main thread stalled", latch.await(2, TimeUnit.SECONDS));
+        return value.get();
+    }
+    private JSONObject streamState(WebView view) throws Exception {
+        String encoded = evaluate(view, "JSON.stringify(window.streamState)");
+        return new JSONObject(new JSONArray("[" + encoded + "]").getString(0));
     }
 
     private interface Operation { void run(SecondaryWebViewIsolatedController.Result result); }
@@ -125,6 +140,65 @@ public class SecondaryWebViewIsolatedTest {
             }
             assertTrue("Channel validation failed in " + mode + ": " + title + " " + pageResults(hostView.get()),
                 "PASS secondary channel validation".equals(title));
+        }
+    }
+
+    @Test public void nativeStreamsSharedAndIsolated() throws Exception {
+        Assume.assumeTrue(Build.VERSION.SDK_INT >= 30);
+        assertTrue(!SecondaryWebViewStreams.hasSubscriber("nativeBurst"));
+        SecondaryWebViewStreams.push("nativeBurst", 0);
+        StandardActivity activity = activityRule.getActivity();
+        WebView host = findWebView(activity.getWindow().getDecorView());
+        for (String mode : new String[] {"shared", "isolated"}) {
+            activity.runOnUiThread(() -> activity.loadUrl("https://localhost/secondary-streams-host.html?mode=" + mode));
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(45);
+            while (System.nanoTime() < deadline) {
+                String title = evaluate(host, "document.title");
+                if (title.contains("READY secondary streams") || title.contains("FAIL secondary streams")) break;
+                Thread.sleep(50);
+            }
+            assertTrue("Subscriptions failed in " + mode, evaluate(host, "document.title").contains("READY secondary streams"));
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (!SecondaryWebViewStreams.hasSubscriber("nativeBurst") && System.nanoTime() < deadline) Thread.sleep(25);
+            assertTrue("Subscriber mirror missing in " + mode, SecondaryWebViewStreams.hasSubscriber("nativeBurst"));
+            assertTrue(SecondaryWebViewStreams.hasSubscriber("nativeRate"));
+            assertTrue(!SecondaryWebViewStreams.hasSubscriber("missing"));
+            Thread producer = new Thread(() -> {
+                Map<String, Object> invalid = new HashMap<>(); invalid.put("value", Double.NaN);
+                SecondaryWebViewStreams.push("nativeBurst", invalid);
+                for (int i = 1; i <= 3; i++) SecondaryWebViewStreams.push("nativeBurst", i);
+                for (int i = 0; i < 20; i++) SecondaryWebViewStreams.push("nativeRate", i);
+            }, "SecondaryStreamProducer");
+            producer.start(); producer.join(3000);
+            assertTrue("Producer stalled", !producer.isAlive());
+            JSONObject state = null;
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            while (System.nanoTime() < deadline) {
+                state = streamState(host);
+                if (state.has("burst") && state.optInt("rateCount") > 0 && state.optJSONArray("channelErrors") != null) break;
+                Thread.sleep(50);
+            }
+            assertTrue("No stream delivery in " + mode + ": " + state, state != null && state.has("burst"));
+            assertTrue("Wrong latest sample in " + mode, state.getJSONObject("burst").getInt("latest") == 3);
+            assertTrue("Wrong batch in " + mode, "[1,2,3]".equals(state.getJSONObject("burst").getJSONArray("batch").toString()));
+            assertTrue("Invalid JSON not reported in " + mode, state.getJSONArray("channelErrors").toString().contains("INVALID_JSON"));
+            Thread.sleep(300);
+            assertTrue("Rate cap failed in " + mode, streamState(host).getInt("rateCount") == 1);
+            CountDownLatch paused = new CountDownLatch(1);
+            activity.runOnUiThread(() -> { if ("shared".equals(mode)) activity.secondaryWebViews().onPause(); else activity.isolatedSecondaryWebViews().onPause(); paused.countDown(); });
+            assertTrue(paused.await(2, TimeUnit.SECONDS));
+            assertTrue("Subscription survived background in " + mode, !SecondaryWebViewStreams.hasSubscriber("nativeBurst"));
+            SecondaryWebViewStreams.push("nativeBurst", 4);
+            Thread.sleep(100);
+            assertTrue("Unsubscribed push was delivered in " + mode, streamState(host).getJSONObject("burst").getInt("latest") == 3);
+            CountDownLatch resumed = new CountDownLatch(1);
+            activity.runOnUiThread(() -> { if ("shared".equals(mode)) activity.secondaryWebViews().onResume(); else activity.isolatedSecondaryWebViews().onResume(); resumed.countDown(); });
+            assertTrue(resumed.await(2, TimeUnit.SECONDS));
+            Thread.sleep(300);
+            assertTrue("Subscriber returned without resubscribe in " + mode, !SecondaryWebViewStreams.hasSubscriber("nativeBurst"));
+            CountDownLatch destroyed = new CountDownLatch(1);
+            activity.runOnUiThread(() -> { if ("shared".equals(mode)) activity.secondaryWebViews().destroy(); else activity.isolatedSecondaryWebViews().destroy(); destroyed.countDown(); });
+            assertTrue(destroyed.await(2, TimeUnit.SECONDS));
         }
     }
 

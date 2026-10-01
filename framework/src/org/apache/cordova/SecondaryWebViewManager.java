@@ -84,6 +84,7 @@ public final class SecondaryWebViewManager {
     });
 
     public interface Listener { void onEvent(JSONObject event); }
+    interface SubscriptionObserver { void changed(java.util.Set<String> names); }
     public static final class Failure extends Exception {
         public final String code;
         Failure(String code, String message) { super(message); this.code = code; }
@@ -148,6 +149,7 @@ public final class SecondaryWebViewManager {
     private boolean sampleDrainPosted;
     private volatile java.util.Set<String> subscribedStreams = java.util.Collections.emptySet();
     private volatile java.util.Set<String> batchStreams = java.util.Collections.emptySet();
+    private SubscriptionObserver subscriptionObserver;
     private final java.util.Set<InputStream> openStreams = java.util.concurrent.ConcurrentHashMap.newKeySet();
     private final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
     private Runnable heartbeat;
@@ -172,12 +174,17 @@ public final class SecondaryWebViewManager {
     SecondaryWebViewManager(CordovaActivity activity, FrameLayout rootLayout) {
         this.activity = activity; this.context = activity; this.rootLayout = rootLayout; this.isolatedRuntime = false;
         for (int i = 0; i < histograms.length; i++) histograms[i] = new java.util.concurrent.atomic.AtomicLongArray(8);
+        SecondaryWebViewStreams.register(this);
     }
     SecondaryWebViewManager(Context context) {
         this.activity = null; this.context = context; this.rootLayout = null; this.isolatedRuntime = true;
         for (int i = 0; i < histograms.length; i++) histograms[i] = new java.util.concurrent.atomic.AtomicLongArray(8);
+        SecondaryWebViewStreams.register(this);
     }
     public boolean hasSession() { return sessionId != null; }
+    boolean hasStreamSubscriber(String streamName) { return webView != null && !backgrounded && !dead && subscribedStreams.contains(streamName); }
+    void rejectStreamSample(String streamName) { handler.post(() -> { if (hasStreamSubscriber(streamName)) emit("channelError", "INVALID_JSON"); }); }
+    void setSubscriptionObserver(SubscriptionObserver observer) { subscriptionObserver = observer; observer.changed(subscribedStreams); }
     public String createIsolated(JSONObject config, Listener listener, IBinder token, Display display, int width, int height, String id, long startedAtNs) throws Failure {
         if (!isolatedRuntime || Build.VERSION.SDK_INT < 30 || token == null || display == null || width < 1 || height < 1) throw new Failure("UNSUPPORTED_MODE", "Remote surface is unavailable");
         surfaceToken = token; surfaceDisplay = display; surfaceWidth = width; surfaceHeight = height; requestedSessionId = id; isolatedStartNs = startedAtNs;
@@ -489,7 +496,7 @@ public final class SecondaryWebViewManager {
         @Override public void onPageFinished(WebView view, String url) { if (id.equals(sessionId) && documentScript == null && allowedURL(Uri.parse(url))) view.evaluateJavascript(script(id), null); }
         @Override public void onReceivedError(WebView view, WebResourceRequest request, android.webkit.WebResourceError error) { if (id.equals(sessionId) && request.isForMainFrame() && request.getUrl().toString().equals(entryUrl)) reportEntryFailure(id, error.toString()); }
         @Override public void onReceivedHttpError(WebView view, WebResourceRequest request, WebResourceResponse response) { if (id.equals(sessionId) && request.isForMainFrame() && request.getUrl().toString().equals(entryUrl) && response.getStatusCode() >= 400) reportEntryFailure(id, response.getReasonPhrase()); }
-        @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) { if (id.equals(sessionId)) { dead = true; addMetric(8, 1); emit("terminated", null); closeOpenStreams(); if (container != null) { container.cancelActiveGesture(); container.removeView(view); } if (surfaceHost != null) { surfaceHost.release(); surfaceHost = null; } if (documentScript != null) { documentScript.remove(); documentScript = null; } if (binaryAvailable()) WebViewCompat.removeWebMessageListener(view, "_secondaryBinary"); if (nativeHangDetection) WebViewCompat.setWebViewRenderProcessClient(view, null); view.removeJavascriptInterface("_secondaryNative"); view.setWebViewClient(null); view.destroy(); webView = null; } return true; }
+        @Override public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) { if (id.equals(sessionId)) { dead = true; subscriptions.clear(); refreshStreamNames(); clearQueuedSamples(); addMetric(8, 1); emit("terminated", null); closeOpenStreams(); if (container != null) { container.cancelActiveGesture(); container.removeView(view); } if (surfaceHost != null) { surfaceHost.release(); surfaceHost = null; } if (documentScript != null) { documentScript.remove(); documentScript = null; } if (binaryAvailable()) WebViewCompat.removeWebMessageListener(view, "_secondaryBinary"); if (nativeHangDetection) WebViewCompat.setWebViewRenderProcessClient(view, null); view.removeJavascriptInterface("_secondaryNative"); view.setWebViewClient(null); view.destroy(); webView = null; } return true; }
     }
     private boolean allowedURL(Uri url) {
         final String currentSession = sessionId, currentHost = originHost;
@@ -940,7 +947,7 @@ public final class SecondaryWebViewManager {
         return o;
     }
     public void onPause() { backgrounded = true; subscriptions.clear(); refreshStreamNames(); clearQueuedSamples(); if (webView != null) webView.onPause(); if (heartbeat != null) handler.removeCallbacks(heartbeat); }
-    public void onResume() { backgrounded = false; if (webView != null) webView.onResume(); if (webView != null) startHeartbeat(); }
+    public void onResume() { backgrounded = false; refreshStreamNames(); if (webView != null) webView.onResume(); if (webView != null) startHeartbeat(); }
     public void onTrimMemory(int level) { if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW && webView != null) { webView.freeMemory(); emit("memoryPressure", level); } }
     public void onMainRendererGone() { if (sessionId != null && !dead) { dead = true; addMetric(8, 1); emit("terminated", null); } destroy(); }
     private void closeOpenStreams() {
@@ -962,12 +969,20 @@ public final class SecondaryWebViewManager {
     private void refreshStreamNames() {
         java.util.Set<String> all = new java.util.HashSet<>(), batches = new java.util.HashSet<>();
         for (Subscription sub : subscriptions.values()) { all.add(sub.streamName); if (sub.batch) batches.add(sub.streamName); }
-        subscribedStreams = all; batchStreams = batches;
+        subscribedStreams = java.util.Collections.unmodifiableSet(all); batchStreams = java.util.Collections.unmodifiableSet(batches);
+        if (subscriptionObserver != null) subscriptionObserver.changed(subscribedStreams);
     }
     private void clearQueuedSamples() { synchronized (sampleLock) { queuedLatest.clear(); queuedBatch.clear(); } }
-    /** Native data sources call this directly; at most one UI drain is queued for a burst. */
+    /** Existing instance entry point; new producers use SecondaryWebViewStreams. */
     public void pushSample(String streamName, Object sample) {
-        if (webView == null || backgrounded || !subscribedStreams.contains(streamName)) return;
+        if (!hasStreamSubscriber(streamName)) return;
+        Object snapshot;
+        try { snapshot = SecondaryWebViewStreams.snapshot(sample); }
+        catch (JSONException | RuntimeException e) { rejectStreamSample(streamName); return; }
+        enqueueStreamSample(streamName, snapshot);
+    }
+    void enqueueStreamSample(String streamName, Object sample) {
+        if (!hasStreamSubscriber(streamName)) return;
         if (sample == null) sample = JSONObject.NULL;
         boolean schedule = false;
         synchronized (sampleLock) {
@@ -979,6 +994,16 @@ public final class SecondaryWebViewManager {
             if (!sampleDrainPosted) { sampleDrainPosted = true; schedule = true; }
         }
         if (schedule) handler.post(this::drainSamples);
+    }
+    void acceptSamples(JSONObject frame) {
+        if (frame == null || webView == null || backgrounded || dead) return;
+        java.util.Iterator<String> names = frame.keys();
+        while (names.hasNext()) {
+            String name = names.next(); Object value = frame.opt(name);
+            if (!(value instanceof JSONArray)) continue;
+            JSONArray batch = (JSONArray)value;
+            for (int i = 0; i < batch.length(); i++) enqueueStreamSample(name, batch.opt(i));
+        }
     }
     private void drainSamples() {
         Map<String, Object> latest;

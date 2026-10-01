@@ -15,5 +15,6 @@ interface ISecondaryWebViewService {
     ParcelFileDescriptor getMetrics(String sessionId);
     void resize(String sessionId, int width, int height);
     void setBackgrounded(String sessionId, boolean backgrounded);
+    oneway void pushSamples(String sessionId, in ParcelFileDescriptor payload);
     void trimMemory(String sessionId, int level);
 }

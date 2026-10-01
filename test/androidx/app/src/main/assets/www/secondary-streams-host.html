@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WAIT secondary streams</title>
+<pre id="results"></pre>
+<script src="cordova.js"></script>
+<script>
+window.streamState = {rateCount: 0};
+document.addEventListener('deviceready', async function () {
+    const api = cordova.secondaryWebView;
+    api.onEvent(event => {
+        if (event.type === 'ready') api.post('begin', null).catch(() => {});
+        if (event.type === 'channelError') window.streamState.channelErrors = (window.streamState.channelErrors || []).concat(event.detail);
+        if (event.type !== 'message') return;
+        const message = event.detail;
+        if (message.name === 'subscriptionFailed') { document.getElementById('results').textContent = message.payload; document.title = 'FAIL secondary streams'; }
+        if (message.name === 'subscriptionsReady') document.title = 'READY secondary streams';
+        if (message.name === 'burstResult') window.streamState.burst = message.payload;
+        if (message.name === 'rateCount') window.streamState.rateCount = message.payload;
+    });
+    try {
+        const mode = new URL(location.href).searchParams.get('mode') || 'shared';
+        const config = {url: 'www/secondary-streams.html', processIsolation: mode, zOrder: mode === 'isolated' ? 'below' : 'above'};
+        if (cordova.platformId === 'android' && mode === 'isolated') config.unsafeAllowIsolatedBelowApi33 = true;
+        await api.create(config);
+    } catch (error) {
+        document.getElementById('results').textContent = String(error);
+        document.title = 'FAIL secondary streams';
+    }
+}, {once: true});
+</script>

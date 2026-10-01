@@ -33,6 +33,7 @@ import java.util.concurrent.TimeUnit;
 public final class SecondaryWebViewService extends Service {
     private final Handler main = new Handler(Looper.getMainLooper());
     private final ExecutorService eventDelivery = Executors.newSingleThreadExecutor(r -> new Thread(r, "SecondaryEventDelivery"));
+    private final ExecutorService sampleReads = Executors.newSingleThreadExecutor(r -> new Thread(r, "SecondarySamplePipe"));
     private SecondaryWebViewManager manager;
     private ISecondaryWebViewCallback callback;
     private String sessionId;
@@ -81,6 +82,13 @@ public final class SecondaryWebViewService extends Service {
                     if (id == null || id.isEmpty()) return error("INVALID_CONFIG", "sessionId is required");
                     Display display = ((DisplayManager)getSystemService(DISPLAY_SERVICE)).getDisplay(request.getInt("displayId"));
                     callback = events; sessionId = id;
+                    manager.setSubscriptionObserver(names -> {
+                        ISecondaryWebViewCallback target = callback;
+                        if (target == null || !id.equals(sessionId)) return;
+                        String[] snapshot = names.toArray(new String[0]);
+                        eventDelivery.execute(() -> { try { target.onSubscriptions(id, snapshot); }
+                            catch (RemoteException e) { android.util.Log.w("SecondaryWebView", "Subscriber mirror failed", e); } });
+                    });
                     hostDeath = () -> main.post(SecondaryWebViewService.this::finishSession);
                     events.asBinder().linkToDeath(hostDeath, 0);
                     try {
@@ -124,6 +132,15 @@ public final class SecondaryWebViewService extends Service {
         }
         @Override public void resize(String id, int width, int height) { main.post(() -> { if (id.equals(sessionId)) manager.resizeIsolated(width, height); }); }
         @Override public void setBackgrounded(String id, boolean backgrounded) { main.post(() -> { if (id.equals(sessionId)) { if (backgrounded) manager.onPause(); else manager.onResume(); } }); }
+        @Override public void pushSamples(String id, ParcelFileDescriptor payload) {
+            if (payload == null) return;
+            sampleReads.execute(() -> {
+                try {
+                    JSONObject frame = new JSONObject(SecondaryWebViewPipe.receive(payload));
+                    main.post(() -> { if (id.equals(sessionId)) manager.acceptSamples(frame); });
+                } catch (Exception e) { android.util.Log.w("SecondaryWebView", "Sample delivery failed", e); }
+            });
+        }
         @Override public void trimMemory(String id, int level) { main.post(() -> { if (id.equals(sessionId)) manager.onTrimMemory(level); }); }
     };
     @Override public IBinder onBind(Intent intent) { return binder; }

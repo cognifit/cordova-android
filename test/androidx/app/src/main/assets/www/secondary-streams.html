@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Secondary streams</title>
+<script>
+(function () {
+    const api = window.secondaryWebView;
+    let latestId, batchId, rateId, latest, batch, burstReported = false, rateCount = 0;
+    api.onMessage = function (message) {
+        if (message.name === 'begin') {
+            Promise.all([
+                api.subscribe('nativeBurst', {rateHz: 60, coalesce: 'latest'}),
+                api.subscribe('nativeBurst', {rateHz: 60, coalesce: 'batch'}),
+                api.subscribe('nativeRate', {rateHz: 1, coalesce: 'latest'})
+            ]).then(ids => {
+                [latestId, batchId, rateId] = ids;
+                return api.request('subscribe', {streamName: 'overCap', rateHz: 61, coalesce: 'latest'})
+                    .then(() => { throw new Error('rateHz 61 accepted'); }, error => {
+                        if (!error || error.code !== 'INVALID_SUBSCRIPTION') throw new Error('wrong rate cap error');
+                    });
+            }).then(() => api.post('subscriptionsReady', null))
+                .catch(error => api.post('subscriptionFailed', String(error)));
+        }
+        if (message.name !== 'streams') return;
+        const frame = message.payload;
+        if (frame[latestId]) latest = frame[latestId].data;
+        if (frame[batchId]) batch = frame[batchId].data;
+        if (!burstReported && latest !== undefined && batch !== undefined) {
+            burstReported = true;
+            api.post('burstResult', {latest, batch});
+        }
+        if (frame[rateId]) { rateCount++; api.post('rateCount', rateCount); }
+    };
+})();
+</script>
