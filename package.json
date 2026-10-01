@@ -13,7 +13,8 @@
   ],
   "scripts": {
     "prepare": "cordova-js build > templates/project/assets/www/cordova.js",
-    "test": "npm run lint && npm run cover && npm run java-unit-tests",
+    "check:cordova-js-bundle": "node scripts/check-cordova-js-bundle.js",
+    "test": "npm run lint && npm run check:cordova-js-bundle && npm run cover && npm run java-unit-tests",
     "lint": "eslint .",
     "lint:fix": "npm run lint -- --fix",
     "unit-tests": "jasmine --config=spec/unit/jasmine.json",
