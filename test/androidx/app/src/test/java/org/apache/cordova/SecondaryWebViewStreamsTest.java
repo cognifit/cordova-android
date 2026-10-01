@@ -40,8 +40,10 @@ public class SecondaryWebViewStreamsTest {
 
     @Test public void noSubscriberIsFalseAndPushIsNoOp() {
         assertFalse(SecondaryWebViewStreams.hasSubscriber("missing"));
+        assertEquals(0.0, SecondaryWebViewStreams.maxRateHz("missing"), 0.0);
         SecondaryWebViewStreams.push("missing", Double.NaN);
         assertFalse(SecondaryWebViewStreams.hasSubscriber("missing"));
+        assertEquals(0.0, SecondaryWebViewStreams.maxRateHz("missing"), 0.0);
     }
 
     private static void reject(Object value) throws Exception {

@@ -4,12 +4,15 @@
  * The ASF licenses this file to you under the Apache License, Version 2.0. */
 package org.apache.cordova;
 
+import android.os.SystemClock;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.IdentityHashMap;
 import java.util.Iterator;
 import java.util.List;
@@ -19,42 +22,76 @@ import java.util.WeakHashMap;
 
 /** Process-wide native producer for shared and isolated secondary WebView streams. */
 public final class SecondaryWebViewStreams {
+    static final class StreamInfo {
+        final int rateHz;
+        final boolean batch;
+        StreamInfo(int rateHz, boolean batch) { this.rateHz = rateHz; this.batch = batch; }
+    }
+    private static final class RateGate { long lastAcceptedNs; }
     private static final Object lock = new Object();
     private static final Set<SecondaryWebViewManager> shared = Collections.newSetFromMap(new WeakHashMap<>());
     private static final Set<SecondaryWebViewIsolatedController> isolated = Collections.newSetFromMap(new WeakHashMap<>());
+    private static final ConcurrentHashMap<String, RateGate> rateGates = new ConcurrentHashMap<>();
 
     private SecondaryWebViewStreams() { }
 
     static void register(SecondaryWebViewManager manager) { synchronized (lock) { shared.add(manager); } }
     static void register(SecondaryWebViewIsolatedController controller) { synchronized (lock) { isolated.add(controller); } }
+    static void resetRateGate(String streamName) { rateGates.remove(streamName); }
 
-    public static boolean hasSubscriber(String streamName) {
-        if (streamName == null || streamName.isEmpty()) return false;
+    public static double maxRateHz(String streamName) {
+        if (streamName == null || streamName.isEmpty()) return 0;
+        int maximum = 0;
         synchronized (lock) {
-            for (SecondaryWebViewManager manager : shared) if (manager.hasStreamSubscriber(streamName)) return true;
-            for (SecondaryWebViewIsolatedController controller : isolated) if (controller.hasStreamSubscriber(streamName)) return true;
+            for (SecondaryWebViewManager manager : shared) {
+                StreamInfo info = manager.streamInfo(streamName);
+                if (info != null) maximum = Math.max(maximum, info.rateHz);
+            }
+            for (SecondaryWebViewIsolatedController controller : isolated) {
+                StreamInfo info = controller.streamInfo(streamName);
+                if (info != null) maximum = Math.max(maximum, info.rateHz);
+            }
         }
-        return false;
+        return maximum;
     }
+    public static boolean hasSubscriber(String streamName) { return maxRateHz(streamName) > 0; }
 
     public static void push(String streamName, Object sample) {
         if (streamName == null || streamName.isEmpty()) return;
         List<SecondaryWebViewManager> locals = null;
         List<SecondaryWebViewIsolatedController> remotes = null;
+        int maximum = 0;
+        boolean batch = false;
         synchronized (lock) {
-            for (SecondaryWebViewManager manager : shared) if (manager.hasStreamSubscriber(streamName)) {
+            for (SecondaryWebViewManager manager : shared) {
+                StreamInfo info = manager.streamInfo(streamName);
+                if (info == null) continue;
                 if (locals == null) locals = new ArrayList<>();
                 locals.add(manager);
+                maximum = Math.max(maximum, info.rateHz); batch |= info.batch;
             }
-            for (SecondaryWebViewIsolatedController controller : isolated) if (controller.hasStreamSubscriber(streamName)) {
+            for (SecondaryWebViewIsolatedController controller : isolated) {
+                StreamInfo info = controller.streamInfo(streamName);
+                if (info == null) continue;
                 if (remotes == null) remotes = new ArrayList<>();
                 remotes.add(controller);
+                maximum = Math.max(maximum, info.rateHz); batch |= info.batch;
             }
         }
         if (locals == null && remotes == null) return;
         Object snapshot;
-        try { snapshot = snapshot(sample); }
-        catch (JSONException | RuntimeException e) {
+        try {
+            if (batch) snapshot = snapshot(sample);
+            else {
+                RateGate gate = rateGates.computeIfAbsent(streamName, key -> new RateGate());
+                synchronized (gate) {
+                    long now = SystemClock.elapsedRealtimeNanos();
+                    if (gate.lastAcceptedNs != 0 && now - gate.lastAcceptedNs < 1_000_000_000.0 / maximum) return;
+                    snapshot = snapshot(sample);
+                    gate.lastAcceptedNs = now;
+                }
+            }
+        } catch (JSONException | RuntimeException e) {
             if (locals != null) for (SecondaryWebViewManager manager : locals) manager.rejectStreamSample(streamName);
             if (remotes != null) for (SecondaryWebViewIsolatedController controller : remotes) controller.rejectStreamSample(streamName);
             return;

@@ -35,10 +35,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -69,7 +67,7 @@ public final class SecondaryWebViewIsolatedController {
     private Result pendingDestroy;
     private long startedAtNs;
     private boolean destroying;
-    private volatile Set<String> subscribedStreams = Collections.emptySet();
+    private volatile Map<String, SecondaryWebViewStreams.StreamInfo> streamInfos = Collections.emptyMap();
     private volatile boolean streamsActive;
     private boolean awaitingResumeMirror;
     private final Object sampleLock = new Object();
@@ -84,7 +82,12 @@ public final class SecondaryWebViewIsolatedController {
         serviceIntent = new Intent(activity, SecondaryWebViewService.class);
         SecondaryWebViewStreams.register(this);
     }
-    boolean hasStreamSubscriber(String name) { return streamsActive && subscribedStreams.contains(name); }
+    SecondaryWebViewStreams.StreamInfo streamInfo(String name) { return streamsActive ? streamInfos.get(name) : null; }
+    boolean hasStreamSubscriber(String name) { return streamInfo(name) != null; }
+    private void clearStreamInfos() {
+        for (String name : streamInfos.keySet()) SecondaryWebViewStreams.resetRateGate(name);
+        streamInfos = Collections.emptyMap();
+    }
     private void emitChannelError(String code) { if (listener == null || sessionId == null) return; JSONObject event = new JSONObject(); try { event.put("sessionId", sessionId); event.put("type", "channelError"); event.put("detail", code); listener.onEvent(event); } catch (JSONException ignored) { } }
     void rejectStreamSample(String name) { activity.runOnUiThread(() -> { if (hasStreamSubscriber(name)) emitChannelError("INVALID_JSON"); }); }
     private void clearSamples() { synchronized (sampleLock) { queuedSamples.clear(); sampleFramePosted = false; sampleGeneration++; } }
@@ -179,7 +182,7 @@ public final class SecondaryWebViewIsolatedController {
     private void onServiceDeath() {
         if (service == null && !bound && !connecting) return;
         disconnect(); // Unbind immediately so Android cannot auto-restart a crashed bound service.
-        streamsActive = false; awaitingResumeMirror = false; subscribedStreams = Collections.emptySet(); clearSamples();
+        streamsActive = false; awaitingResumeMirror = false; clearStreamInfos(); clearSamples();
         if (destroying && teardownUnbound) completeDestroy();
         touchMode = "none"; applyTouchRegion();
         if (sessionId != null && listener != null) {
@@ -197,15 +200,23 @@ public final class SecondaryWebViewIsolatedController {
                 } catch (Exception e) { android.util.Log.w("SecondaryWebView", "Invalid remote event", e); }
             });
         }
-        @Override public void onSubscriptions(String id, String[] names) {
+        @Override public void onSubscriptions(String id, String[] names, int[] ratesHz, int[] batchFlags) {
             activity.runOnUiThread(() -> {
                 if (!id.equals(sessionId)) return;
+                if (names == null || ratesHz == null || batchFlags == null || names.length != ratesHz.length || names.length != batchFlags.length) return;
                 if (awaitingResumeMirror) {
                     if (names.length != 0) return;
                     awaitingResumeMirror = false; streamsActive = true;
                 }
                 if (!streamsActive) return;
-                subscribedStreams = Collections.unmodifiableSet(new HashSet<>(java.util.Arrays.asList(names)));
+                Map<String, SecondaryWebViewStreams.StreamInfo> next = new HashMap<>();
+                for (int i = 0; i < names.length; i++) {
+                    if (names[i] == null || ratesHz[i] < 1 || ratesHz[i] > 60 || batchFlags[i] < 0 || batchFlags[i] > 1) return;
+                    next.put(names[i], new SecondaryWebViewStreams.StreamInfo(ratesHz[i], batchFlags[i] != 0));
+                }
+                clearStreamInfos();
+                for (String name : next.keySet()) SecondaryWebViewStreams.resetRateGate(name);
+                streamInfos = Collections.unmodifiableMap(next);
             });
         }
     };
@@ -234,7 +245,7 @@ public final class SecondaryWebViewIsolatedController {
         try { placement = frame(config); } catch (JSONException e) { result.error(error("INVALID_CONFIG", e.toString())); return; }
         startedAtNs = SystemClock.elapsedRealtimeNanos();
         sessionId = UUID.randomUUID().toString(); this.listener = listener; pendingCreate = result;
-        streamsActive = true; awaitingResumeMirror = false; subscribedStreams = Collections.emptySet(); clearSamples();
+        streamsActive = true; awaitingResumeMirror = false; clearStreamInfos(); clearSamples();
         mainView = activity.appView.getView(); mainBackground = mainView.getBackground(); mainView.setBackgroundColor(android.graphics.Color.TRANSPARENT);
         surface = new SurfaceView(activity);
         surface.setZOrderOnTop(unsafeBelowApi33);
@@ -350,8 +361,8 @@ public final class SecondaryWebViewIsolatedController {
             } catch (Exception e) { activity.runOnUiThread(() -> result.error(error("CHANNEL_ERROR", e.toString()))); }
         });
     }
-    public void onPause() { streamsActive = false; awaitingResumeMirror = false; subscribedStreams = Collections.emptySet(); clearSamples(); ISecondaryWebViewService target = service; String id = sessionId; if (target != null && id != null) io.execute(() -> { try { target.setBackgrounded(id, true); } catch (RemoteException ignored) { } }); }
-    public void onResume() { if (sessionId != null) { streamsActive = false; awaitingResumeMirror = true; subscribedStreams = Collections.emptySet(); } ISecondaryWebViewService target = service; String id = sessionId; if (target != null && id != null) io.execute(() -> { try { target.setBackgrounded(id, false); } catch (RemoteException ignored) { } }); }
+    public void onPause() { streamsActive = false; awaitingResumeMirror = false; clearStreamInfos(); clearSamples(); ISecondaryWebViewService target = service; String id = sessionId; if (target != null && id != null) io.execute(() -> { try { target.setBackgrounded(id, true); } catch (RemoteException ignored) { } }); }
+    public void onResume() { if (sessionId != null) { streamsActive = false; awaitingResumeMirror = true; clearStreamInfos(); } ISecondaryWebViewService target = service; String id = sessionId; if (target != null && id != null) io.execute(() -> { try { target.setBackgrounded(id, false); } catch (RemoteException ignored) { } }); }
     public void onTrimMemory(int level) { ISecondaryWebViewService target = service; String id = sessionId; if (target != null && id != null) io.execute(() -> { try { target.trimMemory(id, level); } catch (RemoteException ignored) { } }); }
     public void destroy() { destroy(null); }
     private void completeDestroy() {
@@ -364,7 +375,7 @@ public final class SecondaryWebViewIsolatedController {
         Result creating = pendingCreate; pendingCreate = null;
         if (creating != null) creating.error(error("DESTROYED", "Secondary web view destroyed during create"));
         String old = sessionId; sessionId = null;
-        streamsActive = false; awaitingResumeMirror = false; subscribedStreams = Collections.emptySet(); clearSamples();
+        streamsActive = false; awaitingResumeMirror = false; clearStreamInfos(); clearSamples();
         ISecondaryWebViewService target = service;
         if (old != null && target != null) {
             destroying = true;

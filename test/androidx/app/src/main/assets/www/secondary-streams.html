@@ -4,15 +4,19 @@
 <script>
 (function () {
     const api = window.secondaryWebView;
-    let latestId, batchId, rateId, latest, batch, burstReported = false, rateCount = 0;
+    let latestId, batchId, rateId, fastId, fasterId, batchOnlyId, latest, batch, burstReported = false, rateCount = 0;
+    const fastValues = [], batchValues = [];
     api.onMessage = function (message) {
         if (message.name === 'begin') {
             Promise.all([
                 api.subscribe('nativeBurst', {rateHz: 60, coalesce: 'latest'}),
                 api.subscribe('nativeBurst', {rateHz: 60, coalesce: 'batch'}),
-                api.subscribe('nativeRate', {rateHz: 1, coalesce: 'latest'})
+                api.subscribe('nativeRate', {rateHz: 1, coalesce: 'latest'}),
+                api.subscribe('nativeFast', {rateHz: 10, coalesce: 'latest'}),
+                api.subscribe('nativeFast', {rateHz: 30, coalesce: 'latest'}),
+                api.subscribe('nativeBatchOnly', {rateHz: 20, coalesce: 'batch'})
             ]).then(ids => {
-                [latestId, batchId, rateId] = ids;
+                [latestId, batchId, rateId, fastId, fasterId, batchOnlyId] = ids;
                 return api.request('subscribe', {streamName: 'overCap', rateHz: 61, coalesce: 'latest'})
                     .then(() => { throw new Error('rateHz 61 accepted'); }, error => {
                         if (!error || error.code !== 'INVALID_SUBSCRIPTION') throw new Error('wrong rate cap error');
@@ -29,6 +33,8 @@
             api.post('burstResult', {latest, batch});
         }
         if (frame[rateId]) { rateCount++; api.post('rateCount', rateCount); }
+        if (frame[fasterId]) { fastValues.push(frame[fasterId].data); api.post('fastResult', fastValues); }
+        if (frame[batchOnlyId]) { batchValues.push(...frame[batchOnlyId].data); api.post('batchOnlyResult', batchValues); }
     };
 })();
 </script>

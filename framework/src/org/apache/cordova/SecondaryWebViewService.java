@@ -82,11 +82,15 @@ public final class SecondaryWebViewService extends Service {
                     if (id == null || id.isEmpty()) return error("INVALID_CONFIG", "sessionId is required");
                     Display display = ((DisplayManager)getSystemService(DISPLAY_SERVICE)).getDisplay(request.getInt("displayId"));
                     callback = events; sessionId = id;
-                    manager.setSubscriptionObserver(names -> {
+                    manager.setSubscriptionObserver(streams -> {
                         ISecondaryWebViewCallback target = callback;
                         if (target == null || !id.equals(sessionId)) return;
-                        String[] snapshot = names.toArray(new String[0]);
-                        eventDelivery.execute(() -> { try { target.onSubscriptions(id, snapshot); }
+                        String[] names = new String[streams.size()]; int[] rates = new int[streams.size()], batches = new int[streams.size()];
+                        int index = 0;
+                        for (java.util.Map.Entry<String, SecondaryWebViewStreams.StreamInfo> entry : streams.entrySet()) {
+                            names[index] = entry.getKey(); rates[index] = entry.getValue().rateHz; batches[index] = entry.getValue().batch ? 1 : 0; index++;
+                        }
+                        eventDelivery.execute(() -> { try { target.onSubscriptions(id, names, rates, batches); }
                             catch (RemoteException e) { android.util.Log.w("SecondaryWebView", "Subscriber mirror failed", e); } });
                     });
                     hostDeath = () -> main.post(SecondaryWebViewService.this::finishSession);

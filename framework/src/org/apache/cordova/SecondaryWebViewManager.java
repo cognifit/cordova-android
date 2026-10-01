@@ -84,7 +84,7 @@ public final class SecondaryWebViewManager {
     });
 
     public interface Listener { void onEvent(JSONObject event); }
-    interface SubscriptionObserver { void changed(java.util.Set<String> names); }
+    interface SubscriptionObserver { void changed(Map<String, SecondaryWebViewStreams.StreamInfo> streams); }
     public static final class Failure extends Exception {
         public final String code;
         Failure(String code, String message) { super(message); this.code = code; }
@@ -147,7 +147,7 @@ public final class SecondaryWebViewManager {
     private final Map<String, Object> queuedLatest = new HashMap<>();
     private final Map<String, List<Object>> queuedBatch = new HashMap<>();
     private boolean sampleDrainPosted;
-    private volatile java.util.Set<String> subscribedStreams = java.util.Collections.emptySet();
+    private volatile Map<String, SecondaryWebViewStreams.StreamInfo> streamInfos = java.util.Collections.emptyMap();
     private volatile java.util.Set<String> batchStreams = java.util.Collections.emptySet();
     private SubscriptionObserver subscriptionObserver;
     private final java.util.Set<InputStream> openStreams = java.util.concurrent.ConcurrentHashMap.newKeySet();
@@ -183,9 +183,10 @@ public final class SecondaryWebViewManager {
     }
     public boolean hasSession() { return sessionId != null; }
     /** Producer threads read only volatile lifecycle gates and an immutable volatile subscription snapshot. */
-    boolean hasStreamSubscriber(String streamName) { return webView != null && !backgrounded && !dead && subscribedStreams.contains(streamName); }
+    SecondaryWebViewStreams.StreamInfo streamInfo(String streamName) { return webView != null && !backgrounded && !dead ? streamInfos.get(streamName) : null; }
+    boolean hasStreamSubscriber(String streamName) { return streamInfo(streamName) != null; }
     void rejectStreamSample(String streamName) { handler.post(() -> { if (hasStreamSubscriber(streamName)) emit("channelError", "INVALID_JSON"); }); }
-    void setSubscriptionObserver(SubscriptionObserver observer) { subscriptionObserver = observer; observer.changed(subscribedStreams); }
+    void setSubscriptionObserver(SubscriptionObserver observer) { subscriptionObserver = observer; observer.changed(streamInfos); }
     public String createIsolated(JSONObject config, Listener listener, IBinder token, Display display, int width, int height, String id, long startedAtNs) throws Failure {
         if (!isolatedRuntime || Build.VERSION.SDK_INT < 30 || token == null || display == null || width < 1 || height < 1) throw new Failure("UNSUPPORTED_MODE", "Remote surface is unavailable");
         surfaceToken = token; surfaceDisplay = display; surfaceWidth = width; surfaceHeight = height; requestedSessionId = id; isolatedStartNs = startedAtNs;
@@ -968,10 +969,18 @@ public final class SecondaryWebViewManager {
         listener = null; mainView = null;
     }
     private void refreshStreamNames() {
-        java.util.Set<String> all = new java.util.HashSet<>(), batches = new java.util.HashSet<>();
-        for (Subscription sub : subscriptions.values()) { all.add(sub.streamName); if (sub.batch) batches.add(sub.streamName); }
-        subscribedStreams = java.util.Collections.unmodifiableSet(all); batchStreams = java.util.Collections.unmodifiableSet(batches);
-        if (subscriptionObserver != null) subscriptionObserver.changed(subscribedStreams);
+        java.util.Set<String> batches = new java.util.HashSet<>();
+        Map<String, SecondaryWebViewStreams.StreamInfo> next = new HashMap<>();
+        for (Subscription sub : subscriptions.values()) {
+            if (sub.batch) batches.add(sub.streamName);
+            SecondaryWebViewStreams.StreamInfo previous = next.get(sub.streamName);
+            next.put(sub.streamName, new SecondaryWebViewStreams.StreamInfo(
+                Math.max(sub.rateHz, previous == null ? 0 : previous.rateHz), sub.batch || previous != null && previous.batch));
+        }
+        for (String name : streamInfos.keySet()) SecondaryWebViewStreams.resetRateGate(name);
+        for (String name : next.keySet()) SecondaryWebViewStreams.resetRateGate(name);
+        streamInfos = java.util.Collections.unmodifiableMap(next); batchStreams = java.util.Collections.unmodifiableSet(batches);
+        if (subscriptionObserver != null) subscriptionObserver.changed(streamInfos);
     }
     private void clearQueuedSamples() { synchronized (sampleLock) { queuedLatest.clear(); queuedBatch.clear(); } }
     /** Existing instance entry point; new producers use SecondaryWebViewStreams. */

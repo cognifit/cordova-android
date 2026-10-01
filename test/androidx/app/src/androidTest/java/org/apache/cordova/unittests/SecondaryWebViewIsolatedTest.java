@@ -146,6 +146,7 @@ public class SecondaryWebViewIsolatedTest {
     @Test public void nativeStreamsSharedAndIsolated() throws Exception {
         Assume.assumeTrue(Build.VERSION.SDK_INT >= 30);
         assertTrue(!SecondaryWebViewStreams.hasSubscriber("nativeBurst"));
+        assertTrue(SecondaryWebViewStreams.maxRateHz("nativeBurst") == 0);
         SecondaryWebViewStreams.push("nativeBurst", 0);
         StandardActivity activity = activityRule.getActivity();
         WebView host = findWebView(activity.getWindow().getDecorView());
@@ -163,7 +164,14 @@ public class SecondaryWebViewIsolatedTest {
             assertTrue("Subscriber mirror missing in " + mode, SecondaryWebViewStreams.hasSubscriber("nativeBurst"));
             assertTrue(SecondaryWebViewStreams.hasSubscriber("nativeRate"));
             assertTrue(!SecondaryWebViewStreams.hasSubscriber("missing"));
+            assertTrue(SecondaryWebViewStreams.maxRateHz("missing") == 0);
+            assertTrue(SecondaryWebViewStreams.maxRateHz("nativeRate") == 1);
+            assertTrue(SecondaryWebViewStreams.maxRateHz("nativeFast") == 30);
+            assertTrue(SecondaryWebViewStreams.maxRateHz("nativeBurst") == 60);
+            assertTrue(SecondaryWebViewStreams.maxRateHz("nativeBatchOnly") == 20);
+            AtomicReference<Double> producerRate = new AtomicReference<>();
             Thread producer = new Thread(() -> {
+                producerRate.set(SecondaryWebViewStreams.maxRateHz("nativeFast"));
                 Map<String, Object> invalid = new HashMap<>(); invalid.put("value", Double.NaN);
                 SecondaryWebViewStreams.push("nativeBurst", invalid);
                 for (int i = 1; i <= 3; i++) SecondaryWebViewStreams.push("nativeBurst", i);
@@ -171,6 +179,7 @@ public class SecondaryWebViewIsolatedTest {
             }, "SecondaryStreamProducer");
             producer.start(); producer.join(3000);
             assertTrue("Producer stalled", !producer.isAlive());
+            assertTrue("Background rate query failed in " + mode, producerRate.get() != null && producerRate.get() == 30);
             JSONObject state = null;
             deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             while (System.nanoTime() < deadline) {
@@ -182,12 +191,42 @@ public class SecondaryWebViewIsolatedTest {
             assertTrue("Wrong latest sample in " + mode, state.getJSONObject("burst").getInt("latest") == 3);
             assertTrue("Wrong batch in " + mode, "[1,2,3]".equals(state.getJSONObject("burst").getJSONArray("batch").toString()));
             assertTrue("Invalid JSON not reported in " + mode, state.getJSONArray("channelErrors").toString().contains("INVALID_JSON"));
+            int errorsBeforeFast = state.getJSONArray("channelErrors").length();
+            SecondaryWebViewStreams.push("nativeFast", 1000);
+            Map<String, Object> invalidFast = new HashMap<>(); invalidFast.put("value", Double.NaN);
+            SecondaryWebViewStreams.push("nativeFast", invalidFast);
+            Thread.sleep(200);
+            assertTrue("Dropped invalid sample reported in " + mode, streamState(host).getJSONArray("channelErrors").length() == errorsBeforeFast);
+            SecondaryWebViewStreams.push("nativeFast", invalidFast);
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline && streamState(host).getJSONArray("channelErrors").length() == errorsBeforeFast) Thread.sleep(50);
+            assertTrue("Accepted invalid sample not reported in " + mode, streamState(host).getJSONArray("channelErrors").length() > errorsBeforeFast);
+            Thread fastProducer = new Thread(() -> {
+                for (int i = 0; i < 50; i++) {
+                    SecondaryWebViewStreams.push("nativeFast", i);
+                    SecondaryWebViewStreams.push("nativeBatchOnly", i);
+                    try { Thread.sleep(2); } catch (InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                }
+            }, "SecondaryFastStreamProducer");
+            fastProducer.start(); fastProducer.join(5000);
+            assertTrue("Fast producer stalled", !fastProducer.isAlive());
+            deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline) {
+                state = streamState(host);
+                if (state.optJSONArray("batchValues") != null && state.getJSONArray("batchValues").length() == 50) break;
+                Thread.sleep(50);
+            }
+            JSONArray expectedBatch = new JSONArray(); for (int i = 0; i < 50; i++) expectedBatch.put(i);
+            assertTrue("Batch samples lost in " + mode + ": " + state, state != null && expectedBatch.toString().equals(state.getJSONArray("batchValues").toString()));
+            assertTrue("Latest samples not thinned in " + mode, state.getJSONArray("fastValues").length() > 0 && state.getJSONArray("fastValues").length() <= 8);
             Thread.sleep(300);
             assertTrue("Rate cap failed in " + mode, streamState(host).getInt("rateCount") == 1);
             CountDownLatch paused = new CountDownLatch(1);
             activity.runOnUiThread(() -> { if ("shared".equals(mode)) activity.secondaryWebViews().onPause(); else activity.isolatedSecondaryWebViews().onPause(); paused.countDown(); });
             assertTrue(paused.await(2, TimeUnit.SECONDS));
             assertTrue("Subscription survived background in " + mode, !SecondaryWebViewStreams.hasSubscriber("nativeBurst"));
+            assertTrue("Rate survived background in " + mode, SecondaryWebViewStreams.maxRateHz("nativeFast") == 0);
+            assertTrue("Batch rate survived background in " + mode, SecondaryWebViewStreams.maxRateHz("nativeBatchOnly") == 0);
             SecondaryWebViewStreams.push("nativeBurst", 4);
             Thread.sleep(100);
             assertTrue("Unsubscribed push was delivered in " + mode, streamState(host).getJSONObject("burst").getInt("latest") == 3);
@@ -199,6 +238,8 @@ public class SecondaryWebViewIsolatedTest {
             CountDownLatch destroyed = new CountDownLatch(1);
             activity.runOnUiThread(() -> { if ("shared".equals(mode)) activity.secondaryWebViews().destroy(); else activity.isolatedSecondaryWebViews().destroy(); destroyed.countDown(); });
             assertTrue(destroyed.await(2, TimeUnit.SECONDS));
+            assertTrue("Rate survived destroy in " + mode, SecondaryWebViewStreams.maxRateHz("nativeBurst") == 0);
+            assertTrue("Rate survived destroy in " + mode, SecondaryWebViewStreams.maxRateHz("nativeRate") == 0);
         }
     }
 
