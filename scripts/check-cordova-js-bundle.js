@@ -22,21 +22,12 @@ const path = require('path');
 const { build } = require('cordova-js/build-tools');
 
 const root = path.resolve(__dirname, '..');
-const sources = path.join(root, 'cordova-js-src');
 const bundle = path.join(root, 'templates/project/assets/www/cordova.js');
-
-function newestSourceMtime (directory) {
-    return fs.readdirSync(directory, { withFileTypes: true }).reduce((newest, entry) => {
-        const file = path.join(directory, entry.name);
-        const mtime = entry.isDirectory() ? newestSourceMtime(file) : fs.statSync(file).mtimeMs;
-        return Math.max(newest, mtime);
-    }, 0);
-}
 
 async function main () {
     const current = fs.readFileSync(bundle);
     const fresh = Buffer.from(await build({ platformRoot: root }));
-    if (newestSourceMtime(sources) > fs.statSync(bundle).mtimeMs || !current.equals(fresh)) {
+    if (!current.equals(fresh)) {
         console.error('Cordova JS bundle is stale; run npm run prepare.');
         process.exitCode = 1;
     }
