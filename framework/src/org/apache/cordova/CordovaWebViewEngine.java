@@ -78,6 +78,7 @@ public interface CordovaWebViewEngine {
         Boolean onDispatchKeyEvent(KeyEvent event);
         void clearLoadTimeoutTimer();
         void onPageStarted(String newUrl);
+        default void onPageCommitVisible(String url) {}
         void onReceivedError(int errorCode, String description, String failingUrl);
         void onPageFinishedLoading(String url);
         boolean onNavigationAttempt(String url);

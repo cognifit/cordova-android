@@ -212,6 +212,12 @@ public class SystemWebViewClient extends WebViewClient {
         parentEngine.client.onPageStarted(url);
     }
 
+    @Override
+    public void onPageCommitVisible(WebView view, String url) {
+        super.onPageCommitVisible(view, url);
+        parentEngine.client.onPageCommitVisible(url);
+    }
+
     /**
      * Notify the host application that a page has finished loading.
      * This method is called only for main frame. When onPageFinished() is called, the rendering picture may not be updated yet.

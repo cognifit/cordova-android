@@ -556,6 +556,11 @@ public class CordovaWebViewImpl implements CordovaWebView {
         }
 
         @Override
+        public void onPageCommitVisible(String url) {
+            pluginManager.postMessage("onPageCommitVisible", url);
+        }
+
+        @Override
         public void onReceivedError(int errorCode, String description, String failingUrl) {
             clearLoadTimeoutTimer();
             JSONObject data = new JSONObject();

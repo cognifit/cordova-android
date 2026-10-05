@@ -23,8 +23,10 @@ import android.animation.Animator;
 import android.animation.AnimatorListenerAdapter;
 import android.annotation.SuppressLint;
 import android.os.Handler;
+import android.os.SystemClock;
 import android.view.View;
 import android.view.animation.AccelerateInterpolator;
+import android.webkit.WebView;
 
 import androidx.annotation.NonNull;
 import androidx.core.splashscreen.SplashScreen;
@@ -40,6 +42,7 @@ public class SplashScreenPlugin extends CordovaPlugin {
     // Default config preference values
     private static final boolean DEFAULT_AUTO_HIDE = true;
     private static final int DEFAULT_DELAY_TIME = -1;
+    private static final String DEFAULT_HIDE_ON = "pageFinished";
     private static final boolean DEFAULT_FADE = true;
     private static final int DEFAULT_FADE_TIME = 500;
 
@@ -52,6 +55,8 @@ public class SplashScreenPlugin extends CordovaPlugin {
      * Integer value of how long to delay in milliseconds (default=-1)
      */
     private int delayTime;
+    private String hideOn;
+    private int maxDelayTime;
     /**
      * Boolean flag if to fade to fade out splash screen (default=true)
      */
@@ -65,13 +70,18 @@ public class SplashScreenPlugin extends CordovaPlugin {
     /**
      * Boolean flag to determine if the splash screen remains visible.
      */
-    private boolean keepOnScreen = true;
+    private volatile boolean keepOnScreen = true;
+    private long setupTimeMs;
+    private int pageStarts;
+    private boolean firstPaintRequested;
 
     @Override
     protected void pluginInitialize() {
         // Auto Hide & Delay Settings
         autoHide = preferences.getBoolean("AutoHideSplashScreen", DEFAULT_AUTO_HIDE);
         delayTime = preferences.getInteger("SplashScreenDelay", DEFAULT_DELAY_TIME);
+        hideOn = preferences.getString("SplashScreenHideOn", DEFAULT_HIDE_ON);
+        maxDelayTime = preferences.getInteger("SplashScreenMaxDelay", DEFAULT_DELAY_TIME);
         LOG.d(PLUGIN_NAME, "Auto Hide: " + autoHide);
         if (delayTime != DEFAULT_DELAY_TIME) {
             LOG.d(PLUGIN_NAME, "Delay: " + delayTime + "ms");
@@ -97,7 +107,7 @@ public class SplashScreenPlugin extends CordovaPlugin {
              * The `.hide()` method can only be triggered if the `splashScreenAutoHide`
              * is set to `false`.
              */
-            keepOnScreen = false;
+            hideSplash("js");
         } else {
             return false;
         }
@@ -116,23 +126,40 @@ public class SplashScreenPlugin extends CordovaPlugin {
             case "onPageFinished":
                 attemptCloseOnPageFinished();
                 break;
+
+            case "onPageStarted":
+                if (usesFirstPaint() && pageStarts < 2) {
+                    pageStarts++;
+                }
+                break;
+
+            case "onPageCommitVisible":
+                attemptCloseOnFirstPaint();
+                break;
         }
 
         return null;
     }
 
     private void setupSplashScreen(SplashScreen splashScreen) {
+        setupTimeMs = SystemClock.uptimeMillis();
         // Setup Splash Screen Delay
         splashScreen.setKeepOnScreenCondition(() -> keepOnScreen);
 
+        Handler splashScreenDelayHandler = new Handler(cordova.getContext().getMainLooper());
+
         // auto hide splash screen when custom delay is defined.
         if (autoHide && delayTime != DEFAULT_DELAY_TIME) {
-            Handler splashScreenDelayHandler = new Handler(cordova.getContext().getMainLooper());
-            splashScreenDelayHandler.postDelayed(() -> keepOnScreen = false, delayTime);
+            splashScreenDelayHandler.postDelayed(() -> hideSplash("delay"), delayTime);
         }
 
-        // auto hide splash screen with default delay (-1) delay is controlled by the
-        // `onPageFinished` message.
+        if (maxDelayTime >= 0) {
+            splashScreenDelayHandler.postAtTime(() -> hideSplash("maxDelay"),
+                    setupTimeMs + maxDelayTime);
+        }
+
+        // Without a fixed delay, auto hide is controlled by either onPageFinished or
+        // the first page's visual state callback.
 
         // If auto hide is disabled (false), the hiding of the splash screen must be determined &
         // triggered by the front-end code with the `navigator.splashscreen.hide()` method.
@@ -166,8 +193,39 @@ public class SplashScreenPlugin extends CordovaPlugin {
     }
 
     private void attemptCloseOnPageFinished() {
+        // Also serves as a fallback when the first paint could not be observed.
         if (autoHide && delayTime == DEFAULT_DELAY_TIME) {
+            hideSplash("pageFinished");
+        }
+    }
+
+    private boolean usesFirstPaint() {
+        return autoHide && delayTime == DEFAULT_DELAY_TIME && "firstPaint".equals(hideOn);
+    }
+
+    private void attemptCloseOnFirstPaint() {
+        if (!usesFirstPaint() || !keepOnScreen || pageStarts != 1 || firstPaintRequested) {
+            return;
+        }
+        View view = webView.getView();
+        if (view instanceof WebView) {
+            firstPaintRequested = true;
+            ((WebView) view).postVisualStateCallback(0, new WebView.VisualStateCallback() {
+                @Override
+                public void onComplete(long requestId) {
+                    if (pageStarts == 1) {
+                        hideSplash("firstPaint");
+                    }
+                }
+            });
+        }
+    }
+
+    private synchronized void hideSplash(String trigger) {
+        if (keepOnScreen) {
             keepOnScreen = false;
+            LOG.d(PLUGIN_NAME, "Splash hidden by " + trigger + " after "
+                    + (SystemClock.uptimeMillis() - setupTimeMs) + "ms");
         }
     }
 }
