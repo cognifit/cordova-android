@@ -86,6 +86,30 @@ public class SecondaryWebViewIsolatedTest {
 
     private interface Operation { void run(SecondaryWebViewIsolatedController.Result result); }
 
+    @Test public void mediaAutoplaySharedWithWebAudioRunningDefault() throws Exception { mediaAutoplay("shared"); }
+
+    @Test public void mediaAutoplayIsolatedWithWebAudioRunningDefault() throws Exception {
+        Assume.assumeTrue(Build.VERSION.SDK_INT >= 30);
+        mediaAutoplay("isolated");
+    }
+
+    private void mediaAutoplay(String mode) throws Exception {
+        StandardActivity activity = activityRule.getActivity();
+        AtomicReference<WebView> host = new AtomicReference<>();
+        CountDownLatch ready = new CountDownLatch(1);
+        activity.runOnUiThread(() -> { host.set(findWebView(activity.getWindow().getDecorView())); ready.countDown(); });
+        assertTrue(ready.await(2, TimeUnit.SECONDS));
+        activity.runOnUiThread(() -> activity.loadUrl("https://localhost/secondary-autoplay-host.html?mode=" + mode));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        String title = "";
+        while (System.nanoTime() < deadline) {
+            title = evaluate(host.get(), "document.title");
+            if (title.contains("PASS secondary autoplay") || title.contains("FAIL secondary autoplay")) break;
+            Thread.sleep(100);
+        }
+        assertTrue("Autoplay failed in " + mode + ": " + title + " " + pageResults(host.get()), title.contains("PASS secondary autoplay"));
+    }
+
     @Test public void concurrencyStressSharedAndIsolated() throws Exception {
         Assume.assumeTrue(Build.VERSION.SDK_INT >= 30);
         for (String mode : new String[] {"shared", "isolated"}) {

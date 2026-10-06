@@ -216,6 +216,7 @@ public final class SecondaryWebViewManager {
     private boolean binaryAvailable() { return WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER) && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER) && WebViewFeature.isFeatureSupported(WebViewFeature.POST_WEB_MESSAGE); }
     public String create(JSONObject config, Listener listener) throws Failure {
         if (sessionId != null) throw new Failure("ALREADY_EXISTS", "Destroy the current secondary web view first");
+        if (config.has("allowMediaAutoplay") && !(config.opt("allowMediaAutoplay") instanceof Boolean)) throw new Failure("INVALID_CONFIG", "allowMediaAutoplay must be boolean");
         String url = config.optString("url", "");
         if (url.isEmpty()) throw new Failure("INVALID_CONFIG", "url is required");
         String processMode = config.optString("processIsolation", "shared");
@@ -302,6 +303,7 @@ public final class SecondaryWebViewManager {
         }
         webView = isolatedRuntime ? new TrackedWebView(context) : new WebView(context);
         configureWebView();
+        if (config.optBoolean("allowMediaAutoplay", false)) webView.getSettings().setMediaPlaybackRequiresUserGesture(false);
         webView.setBackgroundColor(color);
         if (isolatedRuntime) { surfaceHost = new SurfaceControlViewHost(context, surfaceDisplay, surfaceToken); surfaceHost.setView(webView, surfaceWidth, surfaceHeight); }
         else if ("below".equals(config.optString("zOrder", "below"))) { container.addView(webView, frame); container.addView(mainView, mainParams); }
