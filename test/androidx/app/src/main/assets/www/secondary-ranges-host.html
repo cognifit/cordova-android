@@ -1,0 +1,42 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WAIT secondary ranges</title>
+<pre id="results"></pre>
+<script src="cordova.js"></script>
+<script>
+document.addEventListener('deviceready', async () => {
+    const api = cordova.secondaryWebView;
+    const mode = new URL(location.href).searchParams.get('mode') || 'shared';
+    const config = {url: 'www/secondary-ranges.html', processIsolation: mode, zOrder: mode === 'isolated' ? 'below' : 'above', allowMediaAutoplay: true, allowInlineMediaPlayback: true, telemetry: {assetErrors: true, perRequest: true}};
+    if (cordova.platformId === 'android' && mode === 'isolated') config.unsafeAllowIsolatedBelowApi33 = true;
+    window.rangeAssetErrors = [];
+    const results = document.getElementById('results');
+    let timer;
+    let unsubscribe;
+    try {
+        const report = new Promise((resolve, reject) => {
+            timer = setTimeout(() => reject(new Error('Range sample timed out')), 45000);
+            unsubscribe = api.onEvent(event => {
+                if (event.type === 'ready') api.post('beginRangeTest', null).catch(reject);
+                if (event.type === 'assetError') window.rangeAssetErrors.push(event.detail);
+                if (event.type === 'loadFailed') reject(new Error(JSON.stringify(event.detail)));
+                if (event.type === 'message' && event.detail.name === 'rangeTestResult') resolve(event.detail.payload);
+            });
+        });
+        report.catch(() => {});
+        await api.create(config);
+        const state = await report;
+        results.textContent = state.lines.join('\n') + (state.error ? '\n' + state.error : '');
+        if (!state.ok) throw new Error(state.error);
+        const metrics = await api.getMetrics();
+        const traces = metrics.assetReadTraces || metrics.traces || [];
+        if (!traces.some(trace => trace.status === 206 && trace.bytes === 16)) throw new Error('Missing range trace with actual byte count');
+        if (!window.rangeAssetErrors.some(error => error.status === 416)) throw new Error('Missing 416 assetError');
+        window.rangeMetrics = metrics;
+        document.title = 'PASS secondary ranges';
+    } catch (error) {
+        results.textContent += '\n' + String(error);
+        document.title = 'FAIL secondary ranges';
+    } finally { clearTimeout(timer); if (unsubscribe) unsubscribe(); await api.destroy().catch(() => {}); }
+}, {once: true});
+</script>

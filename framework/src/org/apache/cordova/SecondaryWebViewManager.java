@@ -491,7 +491,13 @@ public final class SecondaryWebViewManager {
         @Override public boolean shouldOverrideUrlLoading(WebView view, String url) { return denyNavigation(Uri.parse(url)); }
         private boolean denyNavigation(Uri url) { if (allowedURL(url)) return false; addMetric(5, 1); Log.w(TAG, "Denied secondary navigation: " + url); return true; }
         @Override public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-            try { return read(request.getUrl()); }
+            try {
+                String range = null;
+                if ("GET".equals(request.getMethod())) for (java.util.Map.Entry<String, String> header : request.getRequestHeaders().entrySet()) {
+                    if ("Range".equalsIgnoreCase(header.getKey())) { range = header.getValue(); break; }
+                }
+                return read(request.getUrl(), range);
+            }
             catch (RuntimeException | OutOfMemoryError e) {
                 Log.e(TAG, "Secondary asset interceptor failed", e);
                 return failureResponse(String.valueOf(request.getUrl()), 500, "Internal Server Error");
@@ -563,15 +569,22 @@ public final class SecondaryWebViewManager {
         return response("text/plain", status, reason, null);
     }
     private WebResourceResponse response(String mime, int status, String reason, InputStream stream) {
+        return response(mime, status, reason, stream, -1, null);
+    }
+    private WebResourceResponse response(String mime, int status, String reason, InputStream stream, long length, String contentRange) {
         String encoding = mime.startsWith("text/") || "application/javascript".equals(mime) || "application/json".equals(mime) || "image/svg+xml".equals(mime) ? "UTF-8" : null;
-        java.util.Map<String, String> headers = new java.util.HashMap<>(); headers.put("Cache-Control", status == 200 ? "private, max-age=" + assetCacheMaxAgeSeconds : "no-store"); headers.put("Content-Security-Policy", CONTENT_POLICY);
-        headers.put("Content-Type", encoding == null ? mime : mime + "; charset=utf-8");
+        java.util.Map<String, String> headers = new java.util.HashMap<>(); headers.put("Cache-Control", (status == 200 || status == 206) ? "private, max-age=" + assetCacheMaxAgeSeconds : "no-store"); headers.put("Content-Security-Policy", CONTENT_POLICY);
+        // WebResourceResponse supplies Content-Type from mime/encoding; adding it here duplicates it.
+        if (status == 200 || status == 206 || status == 416) headers.put("Accept-Ranges", "bytes");
+        if (contentRange != null) headers.put("Content-Range", contentRange);
+
         if (stream == null) {
             byte[] body = status == 200 ? new byte[0] : reason.getBytes(StandardCharsets.UTF_8);
-            headers.put("Content-Length", Integer.toString(body.length));
             stream = new java.io.ByteArrayInputStream(body);
+            length = body.length;
         }
-        return new WebResourceResponse(mime, encoding, status, reason, headers, stream);
+        return new WebResourceResponse(mime, encoding, status, reason, headers,
+            new SecondaryWebViewResponseStream(stream, length, length));
     }
     private InputStream pipeCompletedAsset(File temporary) throws IOException {
         android.os.ParcelFileDescriptor[] pair = android.os.ParcelFileDescriptor.createPipe();
@@ -591,7 +604,7 @@ public final class SecondaryWebViewManager {
             temporary.delete(); throw new IOException("Could not start large asset pipe", e);
         }
     }
-    private WebResourceResponse read(Uri uri) {
+    private WebResourceResponse read(Uri uri, String rangeHeader) {
         final String readSession = sessionId, readHost = originHost;
         if (readSession == null || !allowedURL(uri, readSession, readHost)) return denied(String.valueOf(uri));
         String path = uri.getPath(); String[] parts = path.split("/", 4);
@@ -620,6 +633,20 @@ public final class SecondaryWebViewManager {
                 if (assetPath.startsWith("/")) return denied(path);
                 input = context.getAssets().open(assetPath);
             } else input = new FileInputStream(candidate);
+            long size;
+            try {
+                // AssetInputStream.available() is the remaining APK asset length, without reading it.
+                size = input instanceof FileInputStream ? ((FileInputStream)input).getChannel().size() : input.available();
+            } catch (IOException | RuntimeException error) { input.close(); throw error; }
+            final SecondaryWebViewByteRange range = SecondaryWebViewByteRange.parse(rangeHeader, size);
+            if (range.status == 416) {
+                input.close(); addMetric(4, 1); addMetric(6, 1); trace(path, 416, 0);
+                WebResourceResponse failure = failureResponse(path, 416, "Range Not Satisfiable");
+                failure.getResponseHeaders().put("Content-Range", range.contentRange());
+                failure.setData(new SecondaryWebViewResponseStream(new java.io.ByteArrayInputStream(new byte[0]), 0, 0));
+                return failure;
+            }
+            final java.util.concurrent.atomic.AtomicLong bytesRead = new java.util.concurrent.atomic.AtomicLong();
             long opened = SystemClock.elapsedRealtimeNanos();
             final boolean releaseLocal = local, releaseProcess = process;
             local = process = false;
@@ -636,7 +663,7 @@ public final class SecondaryWebViewManager {
                     try {
                         int n = super.read();
                         if (expired.get()) throw watchdogFailure();
-                        if (n < 0) close();
+                        if (n < 0) close(); else bytesRead.incrementAndGet();
                         return n;
                     } catch (IllegalStateException e) {
                         if (expired.get()) throw watchdogFailure(e);
@@ -654,7 +681,7 @@ public final class SecondaryWebViewManager {
                     try {
                         int n = super.read(b, off, len);
                         if (expired.get()) throw watchdogFailure();
-                        if (n < 0) close();
+                        if (n < 0) close(); else bytesRead.addAndGet(n);
                         return n;
                     } catch (IllegalStateException e) {
                         if (expired.get()) throw watchdogFailure(e);
@@ -687,7 +714,7 @@ public final class SecondaryWebViewManager {
                     try { super.close(); } finally {
                         long duration = SystemClock.elapsedRealtimeNanos() - opened;
                         addMetric(2, duration); sampleHistogram(2, duration); addMetric(4, 1); openStreams.remove(this);
-                        if (ours) { trace(path, 200, duration); if (releaseLocal) localSemaphore.release(); if (releaseProcess) processSemaphore.release(); }
+                        if (ours) { trace(path, range.status, duration, bytesRead.get()); if (releaseLocal) localSemaphore.release(); if (releaseProcess) processSemaphore.release(); }
                         if (perRequest) Log.d(TAG, "Asset read " + path);
                     }
                 }
@@ -717,8 +744,27 @@ public final class SecondaryWebViewManager {
             boolean completed = false;
             try (InputStream stream = counted) {
                 byte[] chunk = new byte[64 * 1024];
+                if (range.status == 206 && range.start > 0) {
+                    if (input instanceof FileInputStream) ((FileInputStream)input).getChannel().position(range.start);
+                    else {
+                        long offset = range.start;
+                        while (offset > 0) {
+                            if (expired.get()) throw new IOException("Secondary asset read watchdog expired");
+                            long skipped = stream.skip(offset);
+                            if (skipped <= 0) throw new java.io.EOFException("Could not seek to byte range");
+                            offset -= skipped;
+                        }
+                    }
+                }
+                long remaining = range.length;
                 int length;
-                while ((length = stream.read(chunk)) != -1) {
+                while (range.status != 206 || remaining > 0) {
+                    length = stream.read(chunk, 0, range.status == 206 ? (int)Math.min(chunk.length, remaining) : chunk.length);
+                    if (length < 0) {
+                        if (range.status == 206 && remaining > 0) throw new java.io.EOFException("Asset shortened during range read");
+                        break;
+                    }
+                    remaining -= length;
                     if (spool == null && body.size() + length > PIPE_ASSET_THRESHOLD) {
                         temporary = File.createTempFile("secondary-asset-", ".tmp", context.getCacheDir());
                         spool = new FileOutputStream(temporary);
@@ -738,8 +784,10 @@ public final class SecondaryWebViewManager {
                 if (!completed && temporary != null) temporary.delete();
             }
             if (!readSession.equals(sessionId) || dead) { if (temporary != null) temporary.delete(); return response("text/plain", 410, "Gone", null); }
-            return response(mime(candidate.getName()), 200, "OK", temporary == null
-                ? new java.io.ByteArrayInputStream(body.toByteArray()) : pipeCompletedAsset(temporary));
+            WebResourceResponse result = response(mime(candidate.getName()), range.status, range.status == 206 ? "Partial Content" : "OK", temporary == null
+                ? new java.io.ByteArrayInputStream(body.toByteArray()) : pipeCompletedAsset(temporary), bytesRead.get(), range.status == 206 ? range.contentRange() : null);
+            if (range.status == 206) result.setData(new SecondaryWebViewResponseStream(result.getData(), range.size, bytesRead.get()));
+            return result;
         } catch (IOException e) { int status = e instanceof java.io.FileNotFoundException ? 404 : 500; String reason = status == 404 ? "Not Found" : "Internal Server Error"; Log.e(TAG, "Asset read failed (path: " + relativeAssetPath(path) + "): " + path, e); addMetric(6, 1); trace(path, status, 0); return failureResponse(path, status, reason); }
         finally { if (local) localSemaphore.release(); if (process) processSemaphore.release(); }
     }
@@ -917,9 +965,10 @@ public final class SecondaryWebViewManager {
         int bucket = 0; while (bucket < HIST_LIMITS_NS.length && nanoseconds >= HIST_LIMITS_NS[bucket]) bucket++;
         histograms[index].incrementAndGet(bucket);
     }
-    private void trace(String path, int status, long durationNs) {
+    private void trace(String path, int status, long durationNs) { trace(path, status, durationNs, 0); }
+    private void trace(String path, int status, long durationNs, long bytes) {
         if (!perRequest) return;
-        JSONObject row = new JSONObject(); try { row.put("path", path); row.put("status", status); row.put("durationNs", durationNs); } catch (JSONException ignored) { }
+        JSONObject row = new JSONObject(); try { row.put("path", path); row.put("status", status); row.put("durationNs", durationNs); row.put("bytes", bytes); } catch (JSONException ignored) { }
         traces.add(row);
         if (traceCount.incrementAndGet() > MAX_TRACES) { if (traces.poll() != null) traceCount.decrementAndGet(); }
     }

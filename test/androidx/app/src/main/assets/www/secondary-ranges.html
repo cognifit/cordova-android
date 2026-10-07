@@ -1,0 +1,90 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Secondary asset ranges</title>
+<video id="video" muted loop autoplay playsinline webkit-playsinline width="160" height="90" src="secondary-range-video.mp4"></video>
+<script>
+secondaryWebView.on('beginRangeTest', async () => {
+    const lines = [];
+    const rangeFailures = [];
+    function check(ok, message) { if (!ok) throw new Error(message); lines.push('PASS ' + message); }
+    async function range(header, status, start, length, contentRange, file = 'secondary-range-data.bin', method = 'GET', nativeContentLength = null) {
+        try {
+            const response = await fetch(file, {method, cache: 'no-store', headers: header === null ? {} : {Range: header}});
+            const bytes = new Uint8Array(await response.arrayBuffer());
+            const label = method + ' ' + file + ' ' + header;
+            check(response.status === status, label + ' status ' + status + ' (got ' + response.status + ')');
+            check(response.headers.get('accept-ranges') === 'bytes', label + ' Accept-Ranges');
+            check(Number(response.headers.get('content-length')) === (nativeContentLength === null ? bytes.length : nativeContentLength), label + (nativeContentLength === null ? ' Content-Length' : ' native WebView POST Range Content-Length limitation') + ' body=' + bytes.length + ' header=' + response.headers.get('content-length'));
+            check(response.headers.get('content-range') === contentRange, label + ' Content-Range');
+            check(response.headers.get('content-security-policy') !== null, label + ' CSP');
+            if (status === 416) {
+                check(response.headers.get('cache-control') === 'no-store', label + ' error cache policy');
+                check(response.headers.get('content-type').split(',').length === 1, label + ' single Content-Type');
+            } else {
+                check(response.headers.get('content-type') === 'application/octet-stream', label + ' single Content-Type');
+                check(response.headers.get('cache-control') === 'private, max-age=3600', label + ' cache policy');
+                check(bytes.length === length && bytes.every((value, index) => value === (start + index) % 256), label + ' exact body');
+            }
+        } catch (error) { rangeFailures.push(method + ' ' + header + ': ' + String(error)); lines.push('FAIL ' + rangeFailures[rangeFailures.length - 1]); }
+    }
+    async function nativeRangeError(header) {
+        // Chromium rejects these before delivering shouldInterceptRequest's response.
+        let error;
+        try { await fetch('secondary-range-data.bin', {cache: 'no-store', headers: {Range: header}}); }
+        catch (failure) { error = failure; }
+        check(error instanceof TypeError, 'native WebView Range network-error limitation: ' + header);
+    }
+    async function waitFor(predicate, label) {
+        const deadline = performance.now() + 10000;
+        while (!predicate() && performance.now() < deadline) await new Promise(resolve => setTimeout(resolve, 25));
+        check(predicate(), label);
+    }
+    try {
+        const textResponse = await fetch('secondary-range-text.txt', {cache: 'no-store'});
+        check(textResponse.headers.get('content-type').toLowerCase() === 'text/plain' && await textResponse.text() === 'héllo', 'single UTF-8 text Content-Type and encoding');
+        await range(null, 200, 0, 1024, null);
+        await range('bytes=0-15', 206, 0, 16, 'bytes 0-15/1024');
+        await range('bytes=1000-', 206, 1000, 24, 'bytes 1000-1023/1024');
+        await range('bytes=-16', 206, 1008, 16, 'bytes 1008-1023/1024');
+        await range('bytes=1016-2000', 206, 1016, 8, 'bytes 1016-1023/1024');
+        await range('bytes=-2000', 206, 0, 1024, 'bytes 0-1023/1024');
+        await nativeRangeError('bytes=0-999999999999999999999');
+        await range('bytes=1024-', 416, 0, 0, 'bytes */1024');
+        await nativeRangeError('bytes=-0');
+        await nativeRangeError('bytes=999999999999999999999-');
+        await range('bytes=0-0', 416, 0, 0, 'bytes */0', 'secondary-range-empty.bin');
+        await range(null, 200, 0, 0, null, 'secondary-range-empty.bin');
+        await range('bytes=0-1,4-5', 200, 0, 1024, null);
+        for (const header of ['bytes=broken', 'bytes=9-3', 'items=0-15', 'bytes=-', 'bytes=1.5-2', 'bytes=999999999999999999999-9223372036854775808']) {
+            await nativeRangeError(header);
+        }
+        await range('bytes=0-15', 200, 0, 1024, null, 'secondary-range-data.bin', 'POST', 16);
+        const mp4 = await fetch('secondary-range-video.mp4', {cache: 'no-store'});
+        const movie = new Uint8Array(await mp4.arrayBuffer());
+        check(mp4.status === 200 && Number(mp4.headers.get('content-length')) === movie.length && movie.length > 2000000, 'full MP4 length (large-asset pipe on Android)');
+        check(mp4.headers.get('content-type') === 'video/mp4', 'MP4 single Content-Type');
+        const head = await fetch('secondary-range-video.mp4', {cache: 'no-store', headers: {Range: 'bytes=0-15'}});
+        const headBytes = new Uint8Array(await head.arrayBuffer());
+        check(head.status === 206 && head.headers.get('content-range') === 'bytes 0-15/' + movie.length, 'MP4 range headers');
+        check(head.headers.get('content-type') === 'video/mp4' && Number(head.headers.get('content-length')) === 16, 'MP4 range type and length');
+        check(headBytes.length === 16 && headBytes.every((value, index) => value === movie[index]) && String.fromCharCode(...headBytes.slice(4, 8)) === 'ftyp', 'MP4 exact range bytes');
+        // A real allowed-root MP4, not a Blob/data URL: exercise the media pipeline's own ranges.
+        const video = document.getElementById('video');
+        await waitFor(() => !video.paused && video.currentTime > 0 && video.readyState >= 2, 'MP4 started');
+        check(video.error === null && video.duration > 8 && video.muted && video.loop, 'muted looping MP4 decoded');
+        video.currentTime = 7.25;
+        await waitFor(() => !video.seeking && video.currentTime >= 7, 'MP4 forward seek');
+        video.currentTime = 1;
+        await waitFor(() => !video.seeking && video.currentTime >= 1 && video.currentTime < 3, 'MP4 backward seek');
+        const time = video.currentTime;
+        await waitFor(() => video.currentTime > time + 0.1, 'MP4 playback advances after seek');
+        check(!video.webkitDisplayingFullscreen && !document.fullscreenElement, 'MP4 stays inline');
+        video.pause();
+        if (rangeFailures.length) throw new Error(rangeFailures.join('; '));
+        secondaryWebView.post('rangeTestResult', {ok: true, lines});
+    } catch (error) {
+        document.getElementById('video').pause();
+        secondaryWebView.post('rangeTestResult', {ok: false, lines, error: String(error)});
+    }
+});
+</script>

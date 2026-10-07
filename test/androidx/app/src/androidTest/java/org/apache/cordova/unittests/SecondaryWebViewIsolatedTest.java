@@ -110,6 +110,88 @@ public class SecondaryWebViewIsolatedTest {
         assertTrue("Inline playback failed in " + mode + ": " + title + " " + pageResults(host.get()), title.contains("PASS secondary inline media"));
     }
 
+    @Test public void rangeSeeksSparseFileWithoutReadingWholeAsset() throws Exception {
+        StandardActivity activity = activityRule.getActivity();
+        SecondaryWebViewManager manager = activity.secondaryWebViews();
+        File directory = new File(activity.getCacheDir(), "secondary-sparse-range");
+        assertTrue(directory.isDirectory() || directory.mkdirs());
+        File entry = new File(directory, "entry.html");
+        try (FileOutputStream output = new FileOutputStream(entry)) { output.write("<!doctype html>".getBytes(StandardCharsets.UTF_8)); }
+        File large = new File(directory, "large.bin");
+        byte[] expected = "0123456789abcdef".getBytes(StandardCharsets.UTF_8);
+        try (java.io.RandomAccessFile output = new java.io.RandomAccessFile(large, "rw")) {
+            output.setLength(4294967312L); output.seek(4294967296L); output.write(expected);
+        }
+        JSONObject config = new JSONObject(); config.put("url", android.net.Uri.fromFile(entry.getCanonicalFile()).toString());
+        config.put("maxParallelAssetReads", 1); config.put("telemetry", new JSONObject().put("perRequest", true));
+        CountDownLatch created = new CountDownLatch(1);
+        AtomicReference<String> error = new AtomicReference<>();
+        activity.runOnUiThread(() -> {
+            try { manager.create(config, event -> {}); } catch (SecondaryWebViewManager.Failure failure) { error.set(failure.code); }
+            created.countDown();
+        });
+        assertTrue(created.await(5, TimeUnit.SECONDS)); assertNull(error.get());
+        try {
+            java.lang.reflect.Field field = SecondaryWebViewManager.class.getDeclaredField("entryUrl"); field.setAccessible(true);
+            android.net.Uri url = android.net.Uri.parse(((String)field.get(manager)).replace("entry.html", "large.bin"));
+            java.lang.reflect.Method read = SecondaryWebViewManager.class.getDeclaredMethod("read", android.net.Uri.class, String.class); read.setAccessible(true);
+            // Wait for the entry page's separate permit before this direct native read.
+            android.webkit.WebResourceResponse response = null;
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (System.nanoTime() < deadline) {
+                response = (android.webkit.WebResourceResponse)read.invoke(manager, url, "bytes=4294967296-4294967311");
+                if (response.getStatusCode() != 503) break;
+                response.getData().close(); Thread.sleep(25);
+            }
+            assertTrue(response != null && response.getStatusCode() == 206);
+            assertTrue("bytes".equals(response.getResponseHeaders().get("Accept-Ranges")));
+            assertTrue("bytes 4294967296-4294967311/4294967312".equals(response.getResponseHeaders().get("Content-Range")));
+            java.io.ByteArrayOutputStream body = new java.io.ByteArrayOutputStream();
+            try (java.io.InputStream input = response.getData()) { byte[] bytes = new byte[64]; int count; while ((count = input.read(bytes)) != -1) body.write(bytes, 0, count); }
+            assertTrue(java.util.Arrays.equals(expected, body.toByteArray()));
+            JSONArray traces = manager.metrics().getJSONArray("assetReadTraces"); int matching = 0;
+            for (int i = 0; i < traces.length(); i++) {
+                JSONObject trace = traces.getJSONObject(i);
+                if (trace.optString("path").endsWith("large.bin") && trace.optInt("status") == 206) {
+                    matching++; assertTrue(trace.getLong("bytes") == 16);
+                }
+            }
+            assertTrue(matching == 1);
+            // A second read succeeding proves the first released its permit.
+            android.webkit.WebResourceResponse second = (android.webkit.WebResourceResponse)read.invoke(manager, url, "bytes=-16");
+            assertTrue(second.getStatusCode() == 206); second.getData().close();
+        } finally {
+            CountDownLatch destroyed = new CountDownLatch(1);
+            activity.runOnUiThread(() -> { manager.destroy(); destroyed.countDown(); });
+            assertTrue(destroyed.await(5, TimeUnit.SECONDS));
+            large.delete(); entry.delete(); directory.delete();
+        }
+    }
+
+    @Test public void assetRangesAndMP4SeekingSharedWithNativeRangeLimitations() throws Exception { assetRangesAndMP4Seeking("shared"); }
+
+    @Test public void assetRangesAndMP4SeekingIsolatedWithNativeRangeLimitations() throws Exception {
+        Assume.assumeTrue(Build.VERSION.SDK_INT >= 30);
+        assetRangesAndMP4Seeking("isolated");
+    }
+
+    private void assetRangesAndMP4Seeking(String mode) throws Exception {
+        StandardActivity activity = activityRule.getActivity();
+        AtomicReference<WebView> host = new AtomicReference<>();
+        CountDownLatch ready = new CountDownLatch(1);
+        activity.runOnUiThread(() -> { host.set(findWebView(activity.getWindow().getDecorView())); ready.countDown(); });
+        assertTrue(ready.await(2, TimeUnit.SECONDS));
+        activity.runOnUiThread(() -> activity.loadUrl("https://localhost/secondary-ranges-host.html?mode=" + mode));
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(60);
+        String title = "";
+        while (System.nanoTime() < deadline) {
+            title = evaluate(host.get(), "document.title");
+            if (title.contains("PASS secondary ranges") || title.contains("FAIL secondary ranges")) break;
+            Thread.sleep(100);
+        }
+        assertTrue("Range/MP4 test failed in " + mode + ": " + title + " " + pageResults(host.get()), title.contains("PASS secondary ranges"));
+    }
+
     @Test public void mediaAutoplaySharedWithWebAudioRunningDefault() throws Exception { mediaAutoplay("shared"); }
 
     @Test public void mediaAutoplayIsolatedWithWebAudioRunningDefault() throws Exception {
