@@ -1,0 +1,66 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WAIT secondary inline media</title>
+<pre id="results"></pre>
+<script src="cordova.js"></script>
+<script>
+document.addEventListener('deviceready', async function () {
+    const api = cordova.secondaryWebView;
+    const query = new URL(location.href).searchParams;
+    const mode = query.get('mode') || 'shared';
+    const base = {url: 'www/secondary-inline-media.html', processIsolation: mode, zOrder: mode === 'isolated' ? 'below' : 'above', allowMediaAutoplay: true};
+    if (cordova.platformId === 'android' && mode === 'isolated') base.unsafeAllowIsolatedBelowApi33 = true;
+    const results = document.getElementById('results');
+    function check(ok, message) { if (!ok) throw new Error(message); }
+    try {
+        for (const invalid of ['true', 1, null, {}, []]) {
+            let code;
+            try { await api.create(Object.assign({}, base, {allowInlineMediaPlayback: invalid})); }
+            catch (error) { code = error.code; }
+            check(code === 'INVALID_CONFIG', 'Invalid boolean accepted: ' + JSON.stringify(invalid) + ' (' + code + ')');
+        }
+        const options = [undefined, false, true];
+        for (let index = 0; index < options.length; index++) {
+            const option = options[index];
+            const config = Object.assign({}, base);
+            if (option !== undefined) config.allowInlineMediaPlayback = option;
+            const play = cordova.platformId === 'android' || option === true;
+            let unsubscribe;
+            let timer;
+            let markReady;
+            const loaded = new Promise(resolve => { markReady = resolve; });
+            const report = new Promise((resolve, reject) => {
+                timer = setTimeout(() => reject(new Error('No inline media report')), 15000);
+                unsubscribe = api.onEvent(event => {
+                    if (event.type === 'ready') markReady();
+                    if (event.type === 'message' && event.detail.name === 'inlineResult') resolve(event.detail.payload);
+                    if (event.type === 'loadFailed') reject(new Error(JSON.stringify(event.detail)));
+                });
+            });
+            report.catch(() => {});
+            let state;
+            try {
+                await api.create(config);
+                await Promise.race([loaded, report]);
+                // Native iOS tests inspect configuration before letting the sample continue.
+                window.inlineConfigIndex = index;
+                if (query.get('native') === 'true') {
+                    while (window.inlineConfigChecked !== index) await new Promise(resolve => setTimeout(resolve, 25));
+                }
+                await api.post('beginInlineTest', {play});
+                state = await report;
+            } finally { clearTimeout(timer); unsubscribe(); await api.destroy(); }
+            results.textContent += (option === undefined ? 'native default' : 'allowInlineMediaPlayback=' + option) + ': ' + JSON.stringify(state) + '\n';
+            if (play) {
+                check(state.error === null && state.played, 'Video did not play');
+                check(!state.fullscreen, 'Video entered fullscreen');
+            } else check(!state.played, 'Default iOS case should only inspect configuration');
+        }
+        document.title = 'PASS secondary inline media';
+    } catch (error) {
+        results.textContent += String(error);
+        document.title = 'FAIL secondary inline media';
+        await api.destroy().catch(() => {});
+    }
+}, {once: true});
+</script>

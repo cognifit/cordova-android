@@ -217,6 +217,7 @@ public final class SecondaryWebViewManager {
     public String create(JSONObject config, Listener listener) throws Failure {
         if (sessionId != null) throw new Failure("ALREADY_EXISTS", "Destroy the current secondary web view first");
         if (config.has("allowMediaAutoplay") && !(config.opt("allowMediaAutoplay") instanceof Boolean)) throw new Failure("INVALID_CONFIG", "allowMediaAutoplay must be boolean");
+        if (config.has("allowInlineMediaPlayback") && !(config.opt("allowInlineMediaPlayback") instanceof Boolean)) throw new Failure("INVALID_CONFIG", "allowInlineMediaPlayback must be boolean");
         String url = config.optString("url", "");
         if (url.isEmpty()) throw new Failure("INVALID_CONFIG", "url is required");
         String processMode = config.optString("processIsolation", "shared");

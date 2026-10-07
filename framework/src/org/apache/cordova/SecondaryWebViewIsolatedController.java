@@ -233,6 +233,7 @@ public final class SecondaryWebViewIsolatedController {
     public void create(JSONObject config, SecondaryWebViewManager.Listener listener, Result result) {
         if (sessionId != null || destroying) { result.error(error("ALREADY_EXISTS", "Destroy the current secondary web view first")); return; }
         if (config.has("allowMediaAutoplay") && !(config.opt("allowMediaAutoplay") instanceof Boolean)) { result.error(error("INVALID_CONFIG", "allowMediaAutoplay must be boolean")); return; }
+        if (config.has("allowInlineMediaPlayback") && !(config.opt("allowInlineMediaPlayback") instanceof Boolean)) { result.error(error("INVALID_CONFIG", "allowInlineMediaPlayback must be boolean")); return; }
         if (activity.secondaryWebViews().hasSession()) { result.error(error("ALREADY_EXISTS", "Destroy the shared secondary web view first")); return; }
         if (!"below".equals(config.optString("zOrder", "below"))) { result.error(error("UNSUPPORTED_MODE", "Isolated mode currently supports zOrder below only")); return; }
         if (!config.optBoolean("hardwareAccelerated", true)) { result.error(error("UNSUPPORTED_MODE", "Hardware acceleration is required")); return; }
